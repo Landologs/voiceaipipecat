@@ -1,0 +1,13 @@
+{
+  "company_name": "עסק לדוגמה",
+  "agent_name": "נועה",
+  "language": "he",
+  "timezone": "Asia/Jerusalem",
+  "business_hours": {"6": [["09:00", "17:00"]], "0": [["09:00", "17:00"]], "1": [["09:00", "17:00"]], "2": [["09:00", "17:00"]], "3": [["09:00", "17:00"]]},
+  "services": [],
+  "service_area": [],
+  "pricing_rules": [],
+  "faq": {},
+  "callback_policy": "",
+  "escalation_policy": ""
+}

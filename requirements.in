@@ -1,0 +1,4 @@
+# Run app.prepare_framework first. No other Pipecat extras are needed.
+./.build/pipecat[local]
+python-dotenv==1.2.3
+tzdata==2026.3
