@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, AuthenticationError, RateLimitError
 
 from app.agent.prompt_loader import load_prompt
+from app.knowledge.adaptation import TurnContextEngine
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ async def run_text(settings, business, initial_message: str | None = None) -> in
         "content": load_prompt(business, datetime.now(timezone.utc),
                                calendar_path=settings.calendar_path),
     }]
+    turn_context = TurnContextEngine()
     logger.info("Text chat started: LLM=%s model=%s", settings.llm_provider, settings.llm_model)
 
     async with AsyncOpenAI(**_client_options(settings)) as client:
@@ -62,7 +64,8 @@ async def run_text(settings, business, initial_message: str | None = None) -> in
 
             messages.append({"role": "user", "content": message})
             try:
-                reply = await request_reply(client, settings, messages)
+                request_messages = turn_context.augment_messages(messages, message)
+                reply = await request_reply(client, settings, request_messages)
             except RateLimitError:
                 messages.pop()
                 logger.error("LLM rate limit reached. Wait for the provider quota window and retry.")

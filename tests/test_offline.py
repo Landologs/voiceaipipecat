@@ -27,6 +27,72 @@ class PhoneTests(unittest.TestCase):
         for value in ("050123", "+9720501234567", "05012345678", "אפס חמש", "0501234567?", "++972501234567"):
             self.assertEqual(normalize_israeli_phone(value), "")
 
+    def test_phone_tts_representations_keep_storage_and_speech_separate(self):
+        from app.voice.phone_number_tts_test import (
+            group_israeli_mobile_number,
+            representations,
+            spoken_hebrew_phone_number,
+        )
+
+        canonical = "0588080808"
+        self.assertEqual(group_israeli_mobile_number(canonical), "058-808-0808")
+        self.assertEqual(
+            spoken_hebrew_phone_number(canonical),
+            "אפס חמש שמונה, שמונה אפס שמונה, אפס שמונה אפס שמונה",
+        )
+        numeric, spoken = representations(canonical)
+        self.assertEqual(numeric.tts_input, "058-808-0808")
+        self.assertNotIn("058", spoken.tts_input)
+
+    def test_phone_tts_plan_has_sixty_requests(self):
+        from app.voice.phone_number_tts_test import estimate_plan
+
+        plan = estimate_plan(Settings(tts_provider="openai", tts_model="gpt-4o-mini-tts"))
+        self.assertEqual(plan["requests"], 60)
+        self.assertGreater(plan["estimated_audio_seconds"], 0)
+        self.assertIsNotNone(plan["estimated_cost_usd"])
+
+    def test_production_phone_speech_is_language_specific(self):
+        from app.voice.phone_speech import spoken_phone_number
+
+        self.assertEqual(
+            spoken_phone_number("+972586006600", "he"),
+            "אפס חמש שמונה, שש אפס אפס, שש שש אפס אפס",
+        )
+        english = spoken_phone_number("058-600-6600", "en")
+        self.assertEqual(english, "zero five eight, six zero zero, six six zero zero")
+        self.assertNotIn("hundred", english)
+        self.assertNotIn(" oh ", f" {english} ")
+        self.assertEqual(
+            spoken_phone_number("0586006600", "ru"),
+            "ноль пять восемь, шесть ноль ноль, шесть шесть ноль ноль",
+        )
+
+    def test_only_valid_israeli_phone_numbers_are_changed_for_tts(self):
+        from app.voice.phone_speech import format_phone_numbers_for_speech
+
+        text = "המספר הוא 058-808-0808 והמחיר הוא 1200"
+        spoken = format_phone_numbers_for_speech(text)
+        self.assertIn("אפס חמש שמונה, שמונה אפס שמונה, אפס שמונה אפס שמונה", spoken)
+        self.assertIn("1200", spoken)
+        self.assertEqual(format_phone_numbers_for_speech("השעה 10:30"), "השעה 10:30")
+
+    def test_phone_speech_does_not_mutate_canonical_storage(self):
+        from app.voice.phone_speech import format_phone_numbers_for_speech
+
+        canonical = "0521234567"
+        format_phone_numbers_for_speech(f"Phone: {canonical}", language="en")
+        self.assertEqual(canonical, "0521234567")
+
+    def test_landline_phone_uses_israeli_grouping(self):
+        from app.voice.phone_speech import group_israeli_phone_number, spoken_phone_number
+
+        self.assertEqual(group_israeli_phone_number("02-1234567"), "02-123-4567")
+        self.assertEqual(
+            spoken_phone_number("+97221234567", "en"),
+            "zero two, one two three, four five six seven",
+        )
+
 
 class HoursTests(unittest.TestCase):
     def test_boundaries_and_saturday(self):
@@ -51,6 +117,128 @@ class HoursTests(unittest.TestCase):
         self.assertFalse(business.is_open(datetime(2026, 7, 6, 7, tzinfo=ZoneInfo("UTC"))))
 
 
+class KnowledgeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from app.knowledge.retrieval import KnowledgeStore
+
+        cls.store = KnowledgeStore()
+
+    def test_dataset_sizes_are_deliberately_bounded(self):
+        counts = self.store.counts()
+        self.assertGreaterEqual(counts["hebrew/everyday_slang.jsonl"], 50)
+        self.assertLessEqual(counts["hebrew/everyday_slang.jsonl"], 100)
+        hebrew_plumbing = (
+            counts["hebrew/plumbing_terms.jsonl"]
+            + counts["hebrew/plumbing_colloquial.jsonl"]
+        )
+        self.assertGreaterEqual(hebrew_plumbing, 75)
+        self.assertLessEqual(hebrew_plumbing, 150)
+        self.assertGreaterEqual(counts["hebrew/normalization.jsonl"], 25)
+
+    def test_hebrew_slang_lookup(self):
+        matches = self.store.search("סבבה, תודה רבה")
+        self.assertEqual(matches[0].entry.term, "סבבה")
+        self.assertEqual(matches[0].entry.category, "everyday")
+
+    def test_hebrew_plumbing_lookup_is_limited(self):
+        matches = self.store.search("יש לי סתימה מטורפת בכיור והמים לא יורדים")
+        concepts = {match.entry.concept for match in matches}
+        self.assertIn("blocked_drain", concepts)
+        self.assertTrue(any(match.entry.term == "כיור" for match in matches))
+        self.assertLessEqual(len(matches), 5)
+
+    def test_normalization_and_alias_lookup(self):
+        matches = self.store.search("הניגרה לא מפסיקה למלא מים")
+        self.assertTrue(any(match.entry.concept == "running_toilet" for match in matches))
+
+    def test_only_explicitly_safe_slang_can_be_mirrored(self):
+        from app.knowledge.adaptation import ConversationProfile
+
+        profile = ConversationProfile()
+        for _ in range(2):
+            profile.update("סבבה, זה מתאים לי", self.store.search("סבבה, זה מתאים לי"))
+        self.assertEqual(profile.preferred_response_register, "casual")
+        self.assertIn("סבבה", profile.safe_slang_seen)
+
+    def test_profanity_is_understood_but_never_mirrored(self):
+        from app.knowledge.adaptation import ConversationProfile
+
+        matches = self.store.search("כוסעמק, הכול מוצף")
+        profanity = next(match.entry for match in matches if match.entry.term == "כוס אמק")
+        self.assertFalse(profanity.agent_can_use)
+        self.assertFalse(profanity.safe_to_mirror)
+        profile = ConversationProfile()
+        profile.update("כוסעמק, הכול מוצף", matches)
+        self.assertNotIn("כוס אמק", profile.safe_slang_seen)
+
+    def test_explicit_hebrew_to_russian_switch(self):
+        from app.knowledge.adaptation import ConversationProfile
+
+        profile = ConversationProfile()
+        profile.update("שלום, יש לי בעיה בכיור", self.store.search("שלום, יש לי בעיה בכיור"))
+        profile.update("Можно по-русски?", [])
+        self.assertEqual(profile.current_language, "ru")
+
+    def test_substantive_russian_switch_and_clear_hebrew_return(self):
+        from app.knowledge.adaptation import ConversationProfile
+
+        profile = ConversationProfile()
+        profile.update("Да", [])
+        self.assertEqual(profile.current_language, "he")
+        profile.update("У меня полностью забилась раковина", self.store.search(
+            "У меня полностью забилась раковина"
+        ))
+        self.assertEqual(profile.current_language, "ru")
+        profile.update("עכשיו אני רוצה להמשיך בעברית", [])
+        self.assertEqual(profile.current_language, "he")
+
+    def test_substantive_hebrew_to_english_switch(self):
+        from app.knowledge.adaptation import ConversationProfile
+
+        profile = ConversationProfile()
+        profile.update("The kitchen sink is completely blocked", self.store.search(
+            "The kitchen sink is completely blocked"
+        ))
+        self.assertEqual(profile.current_language, "en")
+
+    def test_mixed_hebrew_product_words_do_not_switch_language(self):
+        from app.knowledge.adaptation import ConversationProfile
+
+        profile = ConversationProfile()
+        profile.update("יש בעיה עם ה-Wi-Fi וה-WhatsApp", [])
+        self.assertEqual(profile.current_language, "he")
+
+    def test_history_is_preserved_when_temporary_language_context_is_added(self):
+        from app.knowledge.adaptation import TurnContextEngine
+
+        messages = [
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "קוראים לי דני והכתובת היא הרצל 10"},
+            {"role": "assistant", "content": "תודה דני"},
+            {"role": "user", "content": "Можно по-русски?"},
+        ]
+        augmented = TurnContextEngine(self.store).augment_messages(messages, messages[-1]["content"])
+        self.assertEqual(messages[-1]["content"], "Можно по-русски?")
+        self.assertIn("הרצל 10", augmented[1]["content"])
+        self.assertIn("Reply language: Russian", augmented[-1]["content"])
+
+    def test_unknown_part_request_adds_clarification_guidance(self):
+        from app.knowledge.adaptation import TurnContextEngine
+
+        context = TurnContextEngine(self.store).context_for(
+            "אני לא יודע איך קוראים לזה, משהו נשבר מתחת לכיור"
+        )
+        self.assertIn("Ask a short natural clarification", context)
+        self.assertIn("not diagnoses", context)
+
+    def test_irrelevant_turn_injects_nothing(self):
+        from app.knowledge.adaptation import TurnContextEngine
+
+        context = TurnContextEngine(self.store).context_for("שלום, רציתי לשאול שאלה כללית")
+        self.assertEqual(context, "")
+
+
 class ResultTests(unittest.TestCase):
     def test_demo_mode_isolated_to_demo_directory(self):
         from app.agent.prompt_loader import load_prompt
@@ -68,9 +256,10 @@ class ResultTests(unittest.TestCase):
             datetime(2026, 9, 10, 9, tzinfo=ZoneInfo("Asia/Jerusalem")),
             calendar_path=settings.calendar_path,
         )
-        self.assertIn("מצב הדגמה סגור", prompt)
+        self.assertIn("גבולות מידע פנימיים", prompt)
         self.assertIn("מיזוג פלוס", prompt)
-        self.assertIn("חלונות הדגמה פנויים בלבד", prompt)
+        self.assertIn("חלונות פנויים", prompt)
+        self.assertNotIn("מיזוג פלוס — הדגמה", prompt)
 
     def test_booking_and_phone_guardrails(self):
         with self.assertRaises(ValidationError):
@@ -150,6 +339,76 @@ class ResultTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_final_goodbye_detection(self):
+        from app.voice.pipeline import is_final_goodbye
+
+        self.assertTrue(is_final_goodbye("תודה שפנית אלינו, להתראות."))
+        self.assertTrue(is_final_goodbye("Спасибо, что обратились к нам. До свидания."))
+        self.assertTrue(is_final_goodbye("Thank you for contacting us. Goodbye."))
+        self.assertFalse(is_final_goodbye("תודה, האם דרוש עוד משהו?"))
+
+    async def test_openai_realtime_stt_is_not_pinned_to_hebrew(self):
+        from app.voice.pipeline import STT_CONTEXT_HINT, create_stt
+
+        settings = Settings(api_key="offline-placeholder", stt_model="gpt-live-transcribe")
+        stt = create_stt(settings)
+        self.assertIsNone(stt._settings.language)
+        self.assertEqual(stt._settings.prompt, STT_CONTEXT_HINT)
+
+    async def test_stt_hint_uses_configured_business_vocabulary(self):
+        from app.voice.pipeline import create_stt
+
+        business = BusinessConfig(
+            company_name="מיזוג פלוס",
+            agent_name="נועה",
+            services=["ניקוי מזגן עילי"],
+        )
+        stt = create_stt(
+            Settings(api_key="offline-placeholder", stt_model="gpt-live-transcribe"),
+            business,
+        )
+        self.assertIn("מיזוג פלוס", stt._settings.prompt)
+        self.assertIn("ניקוי מזגן עילי", stt._settings.prompt)
+
+    async def test_phone_tts_formatter_remembers_language_for_number_only_chunk(self):
+        from app.voice.phone_speech import PhoneSpeechFormatter
+
+        formatter = PhoneSpeechFormatter()
+        await formatter("Let me confirm your phone number.", "sentence")
+        spoken = await formatter("058-600-6600", "sentence")
+        self.assertEqual(spoken, "zero five eight, six zero zero, six six zero zero")
+
+    async def test_standalone_tts_can_set_its_output_rate_without_a_pipeline(self):
+        from app.voice.phone_number_tts_test import create_standalone_tts
+
+        settings = Settings(
+            api_key="offline-placeholder",
+            tts_model="gpt-4o-mini-tts",
+            tts_voice="alloy",
+        )
+        tts = create_standalone_tts(settings)
+        self.assertEqual(tts.sample_rate, 24000)
+
+    async def test_conversation_close_can_be_cancelled_during_grace_period(self):
+        from app.voice.pipeline import ConversationCloser
+
+        end_session = AsyncMock()
+        closer = ConversationCloser(end_session, delay=0.01)
+        closer.schedule()
+        closer.cancel()
+        await asyncio.sleep(0.02)
+        end_session.assert_not_awaited()
+
+    async def test_conversation_closes_after_grace_period(self):
+        from app.voice.pipeline import ConversationCloser
+
+        end_session = AsyncMock()
+        closer = ConversationCloser(end_session, delay=0)
+        closer.schedule()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        end_session.assert_awaited_once()
+
     async def test_text_chat_uses_prompt_and_configured_model(self):
         from app.chat.console import run_text
         client = MagicMock()

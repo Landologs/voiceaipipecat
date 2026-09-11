@@ -11,9 +11,11 @@ from app.config.settings import Settings
 def main():
     parser = argparse.ArgumentParser(description="Local Hebrew receptionist")
     parser.add_argument("command", choices=[
-        "check", "audio-devices", "audio-check", "text", "voice", "demo-text", "demo-voice"
+        "check", "audio-devices", "audio-check", "phone-tts-test", "text", "voice", "demo-text", "demo-voice"
     ])
     parser.add_argument("--message", help="Send one message in text mode and exit")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the phone TTS diagnostic plan without calling a provider")
     args = parser.parse_args()
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -47,6 +49,9 @@ def main():
             if command == "audio-check" and any(
                     not report[name]["opened"] for name in ("microphone", "speaker")):
                 return 1
+        elif command == "phone-tts-test":
+            from app.voice.phone_number_tts_test import run_phone_number_tts_test
+            return asyncio.run(run_phone_number_tts_test(settings, dry_run=args.dry_run))
         elif command == "text":
             settings.validate_text()
             from app.chat.console import run_text
