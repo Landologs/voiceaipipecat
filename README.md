@@ -1,6 +1,6 @@
 # Local Hebrew receptionist MVP
 
-A local microphone → streaming STT → LLM → streaming TTS → speaker application using the supplied Pipecat source. The OpenAI adapters are wired, but **no STT, LLM, TTS model or voice is selected**. Live mode refuses to start until those settings and the key are present. No AI API request was needed for setup.
+A local microphone → streaming STT → LLM → streaming TTS → speaker application using the supplied Pipecat source. Every stage can use OpenAI or Gemini independently. With only `GEMINI_API_KEY` configured, the application selects the full Gemini test stack automatically.
 
 ## Environment and setup
 
@@ -23,7 +23,7 @@ For an approved fresh installation:
 
 The lock contains the installed third-party runtime dependencies and download hashes. Local Pipecat is installed separately; `framework-source.json` fingerprints every supplied source file. Its archive lacks Git metadata and reports `0.0.0.dev0`, which is **not an upstream release identification**. `app.prepare_framework` copies the source into `.build/` and adjusts only that copy's manifest to include the existing Silero and Smart Turn ONNX models omitted by archive-based wheel building. It never edits `pipecat/`. Pipecat's declared setuptools/setuptools-scm build requirements are installed by pip in build isolation.
 
-Direct runtime requirements are local `pipecat-ai[local]`, PyAudio 0.2.14, python-dotenv 1.2.3 and tzdata 2026.3. Pipecat brings its required OpenAI SDK, ONNX runtime, audio and validation dependencies; see `installed-dependencies.txt` for every exact installed version. No optional provider/server packages are installed.
+Direct runtime requirements are local `pipecat-ai[local,google]`, PyAudio 0.2.14, python-dotenv 1.2.3 and tzdata 2026.3. Pipecat brings its required OpenAI SDK, Google Gen AI SDK, Google speech modules, ONNX runtime, audio and validation dependencies; see `installed-dependencies.txt` for every exact installed version.
 
 ## Configuration
 
@@ -32,9 +32,13 @@ Copy-Item .env.example .env
 & .venv\Scripts\python.exe -m app.main check
 ```
 
-Populate `.env` locally only after choosing models. `OPENAI_API_KEY` is the only credential needed by the currently implemented adapters. Set `STT_MODEL`, `LLM_MODEL`, `TTS_MODEL`, `TTS_VOICE` explicitly. `STT_PROVIDER`, `LLM_PROVIDER`, `TTS_PROVIDER` currently accept `openai` (also used when blank). Other adapters can be added in the pipeline module later; unsupported provider names fail clearly. Changing compatible model names requires only configuration changes.
+`STT_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER` accept `openai` or `gemini`. If only `GEMINI_API_KEY` is populated and provider/model fields remain blank, the test configuration is:
 
-The LLM must support streamed Chat Completions and JSON object responses for the post-call summary. STT must support OpenAI transcription-only Realtime sessions with local VAD; TTS must support the speech endpoint and streaming PCM. These compatibility requirements must be checked when selecting models. Not every model in a provider catalog is interchangeable.
+- STT: `gemini-3.5-transcribe-live`
+- LLM and post-call summary: `gemini-3.6-flash`
+- TTS: `gemini-3.1-flash-tts-preview`, voice `Kore`
+
+These are overridable test defaults from the supplied Pipecat integration, not final production selections. Set provider, model, and voice fields explicitly to compare alternatives. A mixed provider stack requires the corresponding API keys. Gemini free-tier availability and quotas depend on the model, project, account, and region; 429 rate-limit errors leave the session open so another turn can be attempted after the delay reported by Google.
 
 Edit `app/config/business.example.json`, or set `BUSINESS_CONFIG_PATH` to another configuration. The sample has intentionally empty services, prices, and FAQ; add approved information before evaluating business answers. Weekday keys use 0=Monday through 6=Sunday. Hours are local HH:MM, opening inclusive and closing exclusive; overnight intervals are supported. Missing days are closed. Saturday is configurable. `Asia/Jerusalem` uses timezone rules, not a fixed UTC offset. After-hours status is measured at call start; holidays and precise interpretation of requested appointment dates remain future work.
 
@@ -51,13 +55,34 @@ Edit `app/config/business.example.json`, or set `BUSINESS_CONFIG_PATH` to anothe
 
 `audio-check` opens the default microphone at 16 kHz, reads one second without saving it, and writes a quiet 440 Hz test tone to the default output at 24 kHz. A successful write does not prove the tone was audible. Use a headset to reduce echo. Set `AUDIO_INPUT_DEVICE_INDEX` and `AUDIO_OUTPUT_DEVICE_INDEX` using the device listing if needed. Device indices can change after reconnecting hardware. If opening fails, check Windows microphone permissions, default devices and device availability; no system installation is automatic.
 
-## Live test — only after model selection and approval
+## Live test
+
+### Isolated demo
+
+Use the demonstration before adding real business data. These commands force the app to read only `demo/business.json` and `demo/calendar.json`; voice-call results are written only to `demo/results/`.
+
+```powershell
+& .venv\Scripts\python.exe -m app.main demo-text
+& .venv\Scripts\python.exe -m app.main demo-voice
+```
+
+The demo business, prices, service area, and relative calendar slots are fictional. It can discuss only the shown demo slots and may describe a selection as a demo reservation; it never creates a real booking. `demo-voice` prints interim caller transcription as `Вы (распознаётся):`, completed caller speech as `Вы:`, and the response as `Агент:` while playing the audio. Text is terminal-only and raw audio is never saved.
+
+Test the receptionist prompt and LLM first, without opening the microphone or using STT/TTS:
+
+```powershell
+& .venv\Scripts\python.exe -m app.main text
+```
+
+Type `/exit` to stop. The text mode uses the same business configuration, Hebrew receptionist prompt and `LLM_PROVIDER`/`LLM_MODEL` as voice mode. It does not save a transcript or request a post-chat summary. For a single request, use `text --message "..."`.
+
+Then test the complete voice path:
 
 ```powershell
 & .venv\Scripts\python.exe -m app.main voice
 ```
 
-This command sends audio/text to OpenAI and may incur charges. It opens no inbound server. Pipecat's local Silero VAD, default turn strategies and interruption frames handle barge-in; its Smart Turn model handles turn completion. LLM text and TTS audio stream through the pipeline.
+This command sends audio/text to the providers selected in `.env` and may incur charges outside their free quotas. It opens no inbound server. Pipecat's local Silero VAD, default turn strategies and interruption frames handle barge-in; its Smart Turn model handles turn completion. STT text, LLM text and TTS audio stream through the pipeline.
 
 End with Ctrl+C. The runner cleans up and the app attempts a separate summary request with the selected LLM, validates it and saves an atomic JSON file. A second Ctrl+C may terminate that finalization. Summary failures save an explicitly incomplete result rather than invented details; this MVP does not retain a transcript for retry. The structured model rejects `booked` and normalizes only supported Israeli digit formats. Number structure does not establish ownership or caller confirmation.
 

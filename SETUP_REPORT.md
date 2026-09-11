@@ -29,7 +29,7 @@ Installed local Pipecat `0.0.0.dev0` (source archive fallback version, not an id
 
 ## Verification
 
-- 13 offline unit tests passed.
+- 18 offline unit tests passed before the live Gemini run; the suite also covers full Gemini pipeline construction without network access.
 - Pipeline construction succeeded with socket connections blocked, loading local Silero and Smart Turn models.
 - VAD turn-start signaling enables interruptions.
 - Worker start/end lifecycle passed without provider services.
@@ -51,8 +51,8 @@ Installed local Pipecat `0.0.0.dev0` (source archive fallback version, not an id
 
 ## Before the first real conversation
 
-Choose providers and exact STT model, LLM model, TTS model and voice after comparing Hebrew accuracy/pronunciation, streaming latency, turn/interruption behavior, reliability, cost and compatibility. Only OpenAI adapters are implemented; another provider needs its adapter and any additional dependencies reviewed separately. No particular model is a default or final selection.
+Choose final STT model, LLM model, TTS model and voice after comparing Hebrew accuracy/pronunciation, streaming latency, turn/interruption behavior, reliability, cost and compatibility. Each pipeline stage supports OpenAI or Gemini. A Gemini-only key activates documented test defaults, which remain configurable.
 
-For the implemented OpenAI path, supply exactly one credential: `OPENAI_API_KEY`. Set `STT_MODEL`, `LLM_MODEL`, `TTS_MODEL` and `TTS_VOICE`; these four are configuration, not credentials. The selected LLM also handles post-call JSON extraction. See README for required endpoint compatibility.
+For an all-OpenAI path, supply `OPENAI_API_KEY`. For an all-Gemini path, supply `GEMINI_API_KEY`. Mixed paths require both. Provider/model/voice values are configuration, not credentials. See README for defaults and free-tier limits.
 
 After approval and configuration, start `app.main voice` and manually test Hebrew conversation, FAQ, phone confirmation, interruption and corrections. Live voice quality, model access, spoken guardrails, acoustic echo behavior and end-to-end latency are not proven by offline tests. No calendar, WhatsApp, telephony or database credentials are needed.

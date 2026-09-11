@@ -10,7 +10,10 @@ async def summarize(messages: list, settings, *, after_hours: bool) -> CallResul
                     and isinstance(m.get("content"), str)]
     if not conversation:
         return CallResult(after_hours=after_hours)
-    async with AsyncOpenAI(api_key=settings.api_key, timeout=30, max_retries=1) as client:
+    client_options = {"api_key": settings.llm_api_key, "timeout": 30, "max_retries": 1}
+    if settings.llm_base_url:
+        client_options["base_url"] = settings.llm_base_url
+    async with AsyncOpenAI(**client_options) as client:
         response = await client.chat.completions.create(
             model=settings.llm_model,
             messages=[{"role": "system", "content":

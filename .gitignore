@@ -4,6 +4,7 @@
 .venv/
 .build/
 data/
+demo/results/
 __pycache__/
 *.py[cod]
 .codex

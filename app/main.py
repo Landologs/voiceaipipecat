@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+import sys
 
 from app.config.business_config import BusinessConfig
 from app.config.settings import Settings
@@ -9,8 +10,15 @@ from app.config.settings import Settings
 
 def main():
     parser = argparse.ArgumentParser(description="Local Hebrew receptionist")
-    parser.add_argument("command", choices=["check", "audio-devices", "audio-check", "voice"])
+    parser.add_argument("command", choices=[
+        "check", "audio-devices", "audio-check", "text", "voice", "demo-text", "demo-voice"
+    ])
+    parser.add_argument("--message", help="Send one message in text mode and exit")
     args = parser.parse_args()
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     # Disable third-party debug/error bodies that may contain caller content or credentials.
     from loguru import logger
@@ -19,22 +27,30 @@ def main():
     logging.getLogger("openai").setLevel(logging.CRITICAL)
     try:
         settings = Settings.load()
+        demo = args.command.startswith("demo-")
+        command = args.command.removeprefix("demo-")
+        if demo:
+            settings = settings.for_demo()
         business = BusinessConfig.load(settings.business_path)
-        if args.command == "check":
+        if command == "check":
             print("Business configuration valid. Offline mode: no provider connections.")
             try:
                 settings.validate_voice()
                 print("Live settings present; credentials/model access not tested.")
             except ValueError as exc:
                 print(str(exc))
-        elif args.command in ("audio-devices", "audio-check"):
+        elif command in ("audio-devices", "audio-check"):
             from app.voice.audio_check import diagnose
             report = diagnose(settings.input_device, settings.output_device,
-                              exercise=args.command == "audio-check")
+                              exercise=command == "audio-check")
             print(json.dumps(report, ensure_ascii=False, indent=2))
-            if args.command == "audio-check" and any(
+            if command == "audio-check" and any(
                     not report[name]["opened"] for name in ("microphone", "speaker")):
                 return 1
+        elif command == "text":
+            settings.validate_text()
+            from app.chat.console import run_text
+            return asyncio.run(run_text(settings, business, args.message))
         else:
             settings.validate_voice()
             from app.voice.pipeline import run_voice

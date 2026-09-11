@@ -1,0 +1,32 @@
+{
+  "description": "Demo-only calendar template. Offsets are relative to the day the application starts.",
+  "days": [
+    {
+      "offset": 0,
+      "slots": [
+        {"start": "09:00", "end": "10:00", "status": "occupied"},
+        {"start": "10:30", "end": "11:30", "status": "available"},
+        {"start": "13:00", "end": "14:00", "status": "occupied"},
+        {"start": "15:30", "end": "16:30", "status": "available"}
+      ]
+    },
+    {
+      "offset": 1,
+      "slots": [
+        {"start": "09:30", "end": "10:30", "status": "available"},
+        {"start": "11:00", "end": "12:00", "status": "occupied"},
+        {"start": "14:00", "end": "15:00", "status": "available"},
+        {"start": "16:00", "end": "17:00", "status": "available"}
+      ]
+    },
+    {
+      "offset": 2,
+      "slots": [
+        {"start": "08:30", "end": "09:30", "status": "occupied"},
+        {"start": "10:00", "end": "11:00", "status": "available"},
+        {"start": "12:30", "end": "13:30", "status": "available"},
+        {"start": "15:00", "end": "16:00", "status": "occupied"}
+      ]
+    }
+  ]
+}
