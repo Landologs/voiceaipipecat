@@ -275,7 +275,10 @@ class ResultTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["result"]["customer_name"], "נועה")
             self.assertIsNotNone(datetime.fromisoformat(saved["saved_at"]).tzinfo)
-            self.assertEqual(len(list(Path(directory).iterdir())), 1)
+            report = path.with_suffix(".txt").read_text(encoding="utf-8")
+            self.assertIn("Результат звонка", report)
+            self.assertIn("Имя клиента: נועה", report)
+            self.assertEqual(len(list(Path(directory).iterdir())), 2)
 
     def test_no_model_defaults_or_key_in_repr(self):
         settings = Settings(
