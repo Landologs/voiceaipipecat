@@ -10,12 +10,8 @@ def load_prompt(business: BusinessConfig, at: datetime, *, calendar_path: Path |
             + "\nזמן מקומי: " + at.astimezone(ZoneInfo(business.timezone)).isoformat()
             + "\nהעסק פתוח כעת: " + str(business.is_open(at)))
     if calendar_path:
-        from app.demo.calendar import load_calendar_context
-
-        prompt += ("\n\nגבולות מידע פנימיים: השתמשי אך ורק בהגדרות ובחלונות שמופיעים כאן. "
-                   "אל תזכירי לפונה בדיקה, הדגמה או סביבת פיתוח. "
-                   "אפשר להציג חלון פנוי ולתעד את הזמן המבוקש, אך יש לומר שבחירת הזמן "
-                   "היא בקשה שמחייבת אישור. אל תטעני שנקבע תור, נשלחה הודעה או נשמרה "
-                   "הזמנה.\nחלונות פנויים:\n"
-                   + load_calendar_context(calendar_path, at, business.timezone))
+        prompt += ("\n\nגבולות מידע פנימיים: השתמשי אך ורק בהגדרות העסק ובתוצאות "
+                   "הכלים. אל תזכירי לפונה בדיקה, הדגמה או סביבת פיתוח. "
+                   "אל תציגי חלון פנוי בלי תוצאה עדכנית של check_availability ואל "
+                   "תטעני שפעולה הצליחה בלי תוצאת succeeded מתאימה.")
     return prompt

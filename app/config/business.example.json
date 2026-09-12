@@ -1,13 +1,20 @@
 {
   "company_name": "עסק לדוגמה",
   "agent_name": "נועה",
-  "language": "he",
+  "primary_language": "he",
+  "supported_languages": ["he", "ru", "en"],
   "timezone": "Asia/Jerusalem",
   "business_hours": {"6": [["09:00", "17:00"]], "0": [["09:00", "17:00"]], "1": [["09:00", "17:00"]], "2": [["09:00", "17:00"]], "3": [["09:00", "17:00"]]},
   "services": [],
+  "service_descriptions": {},
   "service_area": [],
+  "known_prices": {},
   "pricing_rules": [],
+  "appointment_duration_minutes": 60,
   "faq": {},
+  "after_hours_policy": "",
+  "urgent_call_policy": "",
   "callback_policy": "",
-  "escalation_policy": ""
+  "escalation_policy": "",
+  "calendar": {"provider": "none", "calendar_id": ""}
 }

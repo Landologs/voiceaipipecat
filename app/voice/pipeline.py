@@ -19,6 +19,9 @@ from pipecat.utils.errors import ErrorCategory
 from pipecat.workers.runner import WorkerRunner
 
 from app.agent.prompt_loader import load_prompt
+from app.actions.factory import create_business_actions
+from app.actions.tools import build_pipecat_tools
+from app.diagnostics.latency import create_latency_observers
 from app.knowledge.processor import KnowledgeContextProcessor
 from app.leads.models import CallResult
 from app.leads.storage import save_result
@@ -160,17 +163,19 @@ def create_tts(settings):
     return service
 
 
-def build_pipeline(settings, business):
+def build_pipeline(settings, business, transport=None):
     """Construct services only; running the worker opens provider connections."""
     settings.validate_voice()
     started = datetime.now(timezone.utc)
-    transport = LocalAudioTransport(LocalAudioTransportParams(
-        audio_in_enabled=True, audio_out_enabled=True,
-        input_device_index=settings.input_device, output_device_index=settings.output_device))
+    actions = create_business_actions(settings, business, started)
+    if transport is None:
+        transport = LocalAudioTransport(LocalAudioTransportParams(
+            audio_in_enabled=True, audio_out_enabled=True,
+            input_device_index=settings.input_device, output_device_index=settings.output_device))
     stt = create_stt(settings, business)
     llm = create_llm(settings, load_prompt(business, started, calendar_path=settings.calendar_path))
     tts = create_tts(settings)
-    context = LLMContext()
+    context = LLMContext(tools=build_pipecat_tools(actions))
     user, assistant = LLMContextAggregatorPair(context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()))
     knowledge = KnowledgeContextProcessor()
@@ -186,6 +191,8 @@ def build_pipeline(settings, business):
     worker = PipelineWorker(pipeline,
         params=PipelineParams(audio_in_sample_rate=16000, audio_out_sample_rate=24000,
                               enable_metrics=True),
+        app_resources=actions,
+        observers=create_latency_observers(),
         processor_unusable_policy=ProcessorUnusablePolicy.END)
     closer = ConversationCloser(worker.stop_when_done)
 
@@ -231,12 +238,32 @@ def build_pipeline(settings, business):
     return worker, context, started
 
 
-async def run_voice(settings, business):
+def _register_twilio_disconnect_handler(transport, runner, session_id: str):
+    """Stop the call worker when Twilio closes the caller-side WebSocket."""
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_caller_disconnected(transport, client):
+        logger.info("Caller hangup: CallSid=%s", session_id or "unknown")
+        await runner.cancel()
+
+
+async def run_voice_session(
+    settings,
+    business,
+    transport=None,
+    *,
+    source="local",
+    session_id: str = "",
+):
     logger.info("Providers: STT=%s LLM=%s TTS=%s", settings.stt_provider,
                 settings.llm_provider, settings.tts_provider)
-    worker, context, started = build_pipeline(settings, business)
+    worker, context, started = build_pipeline(settings, business, transport=transport)
     runner = WorkerRunner(handle_sigint=False)
     interrupted = False
+
+    if source == "twilio" and transport is not None:
+        _register_twilio_disconnect_handler(transport, runner, session_id)
+
     try:
         await runner.add_workers(worker)
         context.add_message({"role": "developer", "content": "הציגי את עצמך ושאלי איך אפשר לעזור."})
@@ -255,6 +282,14 @@ async def run_voice(settings, business):
             status = "failed"
             logger.error("Summary failed (%s); saving an incomplete result", type(exc).__name__)
             result.notes = "Summary unavailable; caller details were not extracted."
+        result.call_started_at = started
+        result.call_ended_at = datetime.now(timezone.utc)
+        result = worker.app_resources.apply_verified_calendar_state(result)
         path = save_result(result, settings.results_path, summary_status=status)
-        logger.info("Conversation completed; structured result saved: %s (status=%s)", path, status)
+        logger.info("%s conversation completed; structured result saved: %s (status=%s)",
+                    source.capitalize(), path, status)
     return interrupted
+
+
+async def run_voice(settings, business):
+    return await run_voice_session(settings, business)

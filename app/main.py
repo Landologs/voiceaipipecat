@@ -11,7 +11,8 @@ from app.config.settings import Settings
 def main():
     parser = argparse.ArgumentParser(description="Local Hebrew receptionist")
     parser.add_argument("command", choices=[
-        "check", "audio-devices", "audio-check", "phone-tts-test", "text", "voice", "demo-text", "demo-voice"
+        "check", "audio-devices", "audio-check", "phone-tts-test", "text", "voice", "telephony",
+        "demo-text", "demo-voice", "demo-telephony"
     ])
     parser.add_argument("--message", help="Send one message in text mode and exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -56,6 +57,9 @@ def main():
             settings.validate_text()
             from app.chat.console import run_text
             return asyncio.run(run_text(settings, business, args.message))
+        elif command == "telephony":
+            from app.telephony.twilio_server import run_server
+            run_server(settings, business)
         else:
             settings.validate_voice()
             from app.voice.pipeline import run_voice

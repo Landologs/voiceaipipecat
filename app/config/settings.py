@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -29,6 +30,15 @@ class Settings:
     business_path: Path = ROOT / "app/config/business.example.json"
     log_transcripts: bool = False
     demo_mode: bool = False
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = field(default="", repr=False)
+    twilio_public_url: str = ""
+    telephony_host: str = "127.0.0.1"
+    telephony_port: int = 8000
+    google_calendar_credentials_file: str = field(default="", repr=False)
+    google_calendar_id: str = ""
+    whatsapp_access_token: str = field(default="", repr=False)
+    whatsapp_phone_number_id: str = ""
 
     @classmethod
     def load(cls):
@@ -46,6 +56,21 @@ class Settings:
                 return int(value) if value else None
             except ValueError:
                 raise ValueError(f"{name} must be an integer device index") from None
+
+        def integer(name, default):
+            value = os.getenv(name, "").strip()
+            try:
+                return int(value) if value else default
+            except ValueError:
+                raise ValueError(f"{name} must be an integer") from None
+
+        def boolean(name, default=False):
+            value = os.getenv(name, "").strip().lower()
+            if not value:
+                return default
+            if value not in {"true", "false"}:
+                raise ValueError(f"{name} must be true or false")
+            return value == "true"
         stt_provider = provider("STT_PROVIDER")
         llm_provider = provider("LLM_PROVIDER")
         tts_provider = provider("TTS_PROVIDER")
@@ -66,7 +91,21 @@ class Settings:
             input_device=device("AUDIO_INPUT_DEVICE_INDEX"),
             output_device=device("AUDIO_OUTPUT_DEVICE_INDEX"),
             business_path=ROOT / (os.getenv("BUSINESS_CONFIG_PATH") or "app/config/business.example.json"),
-            log_transcripts=os.getenv("LOG_TRANSCRIPTS", "").lower() == "true",
+            log_transcripts=boolean("LOG_TRANSCRIPTS"),
+            twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
+            twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
+            twilio_public_url=(
+                os.getenv("TWILIO_PUBLIC_URL", "").strip()
+                or os.getenv("PUBLIC_BASE_URL", "").strip()
+            ).rstrip("/"),
+            telephony_host=os.getenv("TELEPHONY_HOST", "").strip() or "127.0.0.1",
+            telephony_port=integer("TELEPHONY_PORT", 8000),
+            google_calendar_credentials_file=os.getenv(
+                "GOOGLE_CALENDAR_CREDENTIALS_FILE", ""
+            ).strip(),
+            google_calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "").strip(),
+            whatsapp_access_token=os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip(),
+            whatsapp_phone_number_id=os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip(),
         )
 
     def for_demo(self):
@@ -99,6 +138,29 @@ class Settings:
             missing.append("GEMINI_API_KEY")
         if missing:
             raise ValueError("Required before live text chat: " + ", ".join(missing))
+
+    def validate_telephony(self):
+        self.validate_voice()
+        missing = [name for name, value in (
+            ("TWILIO_ACCOUNT_SID", self.twilio_account_sid),
+            ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
+        ) if not value]
+        if missing:
+            raise ValueError("Required before Twilio telephony: " + ", ".join(missing))
+        if not (1 <= self.telephony_port <= 65535):
+            raise ValueError("TELEPHONY_PORT must be between 1 and 65535")
+        if self.twilio_public_url:
+            parsed = urlsplit(self.twilio_public_url)
+            if (
+                parsed.scheme != "https"
+                or not parsed.netloc
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or parsed.username
+                or parsed.password
+            ):
+                raise ValueError("TWILIO_PUBLIC_URL must be an HTTPS origin without a path")
 
     @property
     def llm_api_key(self) -> str:

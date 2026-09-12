@@ -258,7 +258,7 @@ class ResultTests(unittest.TestCase):
         )
         self.assertIn("גבולות מידע פנימיים", prompt)
         self.assertIn("מיזוג פלוס", prompt)
-        self.assertIn("חלונות פנויים", prompt)
+        self.assertIn("check_availability", prompt)
         self.assertNotIn("מיזוג פלוס — הדגמה", prompt)
 
     def test_booking_and_phone_guardrails(self):
@@ -278,9 +278,18 @@ class ResultTests(unittest.TestCase):
             self.assertEqual(len(list(Path(directory).iterdir())), 1)
 
     def test_no_model_defaults_or_key_in_repr(self):
-        settings = Settings(api_key="private-test-value", gemini_api_key="gemini-private-value")
+        settings = Settings(
+            api_key="private-test-value",
+            gemini_api_key="gemini-private-value",
+            twilio_auth_token="twilio-private-value",
+            google_calendar_credentials_file="google-private-value",
+            whatsapp_access_token="whatsapp-private-value",
+        )
         self.assertNotIn("private-test-value", repr(settings))
         self.assertNotIn("gemini-private-value", repr(settings))
+        self.assertNotIn("twilio-private-value", repr(settings))
+        self.assertNotIn("google-private-value", repr(settings))
+        self.assertNotIn("whatsapp-private-value", repr(settings))
         with self.assertRaisesRegex(ValueError, "STT_MODEL"):
             settings.validate_voice()
 
@@ -502,6 +511,21 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(worker)
         self.assertEqual(context.get_messages(), [])
         self.assertIsNotNone(started.tzinfo)
+        self.assertEqual(
+            {tool.name for tool in context.tools.standard_tools},
+            {
+                "check_availability", "create_appointment", "get_appointment",
+                "cancel_appointment", "reschedule_appointment", "save_lead",
+                "get_business_info",
+            },
+        )
+        observer_types = {type(item).__name__ for item in worker._observer._observers}
+        self.assertIn("UserBotLatencyObserver", observer_types)
+        self.assertIn("ServiceMetricsObserver", observer_types)
+        create_schema = next(
+            tool for tool in context.tools.standard_tools if tool.name == "create_appointment"
+        )
+        self.assertIn("caller_confirmed", create_schema.required)
 
     async def test_demo_voice_pipeline_construction_without_network(self):
         from app.voice.pipeline import build_pipeline
@@ -573,6 +597,133 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             seen.append(params.enable_interruptions)
         await strategy.process_frame(VADUserStartedSpeakingFrame())
         self.assertEqual(seen, [True])
+
+
+class TelephonyTests(unittest.TestCase):
+    def setUp(self):
+        self.settings = Settings(
+            api_key="offline-placeholder",
+            stt_model="offline-stt",
+            llm_model="offline-llm",
+            tts_model="offline-tts",
+            tts_voice="offline-voice",
+            twilio_account_sid="AC00000000000000000000000000000000",
+            twilio_auth_token="offline-twilio-token",
+            twilio_public_url="https://example.ngrok.app",
+        )
+        self.business = BusinessConfig(company_name="Test", agent_name="Test")
+
+    def test_telephony_settings_require_twilio_credentials(self):
+        with self.assertRaisesRegex(ValueError, "TWILIO_ACCOUNT_SID"):
+            Settings(
+                api_key="key", stt_model="stt", llm_model="llm",
+                tts_model="tts", tts_voice="voice",
+            ).validate_telephony()
+        self.settings.validate_telephony()
+        with self.assertRaisesRegex(ValueError, "TWILIO_PUBLIC_URL"):
+            Settings(
+                api_key="key", stt_model="stt", llm_model="llm",
+                tts_model="tts", tts_voice="voice",
+                twilio_account_sid="AC123", twilio_auth_token="token",
+                twilio_public_url="https://user:password@example.com/path?unsafe=yes",
+            ).validate_telephony()
+
+    def test_twiml_uses_wss_and_custom_parameters(self):
+        from app.telephony.twilio_server import _valid_signature, build_twiml, websocket_url
+        from twilio.request_validator import RequestValidator
+
+        stream_url = websocket_url("https://example.ngrok.app")
+        xml = build_twiml(stream_url, "+972501234567", "+972599999999")
+        self.assertIn('url="wss://example.ngrok.app/twilio/media"', xml)
+        self.assertIn('name="from_number" value="+972501234567"', xml)
+        self.assertNotIn("?", stream_url)
+        signature = RequestValidator(self.settings.twilio_auth_token).compute_signature(
+            stream_url, {}
+        )
+        self.assertTrue(_valid_signature(
+            self.settings.twilio_auth_token, stream_url, {}, signature
+        ))
+
+    def test_signed_voice_webhook_returns_twiml(self):
+        from fastapi.testclient import TestClient
+        from twilio.request_validator import RequestValidator
+        from app.telephony.twilio_server import create_app
+
+        url = "https://example.ngrok.app/twilio/voice"
+        form = {"CallSid": "CA123", "From": "+972501234567", "To": "+972599999999"}
+        signature = RequestValidator(self.settings.twilio_auth_token).compute_signature(url, form)
+        client = TestClient(create_app(self.settings, self.business))
+        with self.assertLogs("app.telephony.twilio_server", level="INFO") as logs:
+            response = client.post(
+                "/twilio/voice", data=form, headers={"X-Twilio-Signature": signature}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("wss://example.ngrok.app/twilio/media", response.text)
+        self.assertTrue(any("Incoming call received: CallSid=CA123" in line for line in logs.output))
+
+    def test_unsigned_voice_webhook_is_rejected(self):
+        from fastapi.testclient import TestClient
+        from app.telephony.twilio_server import create_app
+
+        client = TestClient(create_app(self.settings, self.business))
+        response = client.post("/twilio/voice", data={"CallSid": "CA123"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_signed_media_websocket_starts_twilio_transport(self):
+        from fastapi.testclient import TestClient
+        from twilio.request_validator import RequestValidator
+        from app.telephony.twilio_server import create_app
+
+        url = "wss://example.ngrok.app/twilio/media"
+        signature = RequestValidator(self.settings.twilio_auth_token).compute_signature(url, {})
+        call_data = SimpleNamespace(stream_id="MZ123", call_id="CA123")
+        run_session = AsyncMock(return_value=False)
+        with (
+            patch(
+                "app.telephony.twilio_server.parse_telephony_websocket",
+                new=AsyncMock(return_value=("twilio", call_data)),
+            ),
+            patch("app.telephony.twilio_server.run_voice_session", new=run_session),
+            self.assertLogs("app.telephony.twilio_server", level="INFO") as logs,
+        ):
+            client = TestClient(create_app(self.settings, self.business))
+            with client.websocket_connect(
+                "/twilio/media", headers={"X-Twilio-Signature": signature}
+            ):
+                pass
+        run_session.assert_awaited_once()
+        self.assertTrue(any("media stream connected: CallSid=CA123" in line for line in logs.output))
+        self.assertTrue(any("media stream disconnected: CallSid=CA123" in line for line in logs.output))
+
+    def test_unsigned_media_websocket_is_rejected(self):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        from app.telephony.twilio_server import create_app
+
+        client = TestClient(create_app(self.settings, self.business))
+        with self.assertRaises(WebSocketDisconnect) as error:
+            with client.websocket_connect("/twilio/media"):
+                pass
+        self.assertEqual(error.exception.code, 1008)
+
+    def test_caller_disconnect_cancels_worker(self):
+        from app.voice.pipeline import _register_twilio_disconnect_handler
+
+        handlers = {}
+
+        class FakeTransport:
+            def event_handler(self, name):
+                def register(callback):
+                    handlers[name] = callback
+                    return callback
+                return register
+
+        runner = SimpleNamespace(cancel=AsyncMock())
+        _register_twilio_disconnect_handler(FakeTransport(), runner, "CA123")
+        with self.assertLogs("app.voice.pipeline", level="INFO") as logs:
+            asyncio.run(handlers["on_client_disconnected"](None, None))
+        runner.cancel.assert_awaited_once()
+        self.assertTrue(any("Caller hangup: CallSid=CA123" in line for line in logs.output))
 
 
 if __name__ == "__main__":

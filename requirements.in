@@ -1,4 +1,6 @@
 # Run app.prepare_framework first. No other Pipecat extras are needed.
-./.build/pipecat[local,google]
+./.build/pipecat[local,google,websocket]
 python-dotenv==1.2.3
 tzdata==2026.3
+twilio>=9,<10
+python-multipart>=0.0.20,<1
