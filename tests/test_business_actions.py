@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -254,6 +256,17 @@ class ActionLayerTests(unittest.IsolatedAsyncioTestCase):
             "check_availability", "create_appointment", "cancel_appointment",
             "get_appointment", "reschedule_appointment", "save_lead", "get_business_info",
         })
+
+    async def test_tool_result_always_requests_spoken_llm_follow_up(self):
+        from app.actions.tools import _return_tool_result
+
+        callback = AsyncMock()
+        params = SimpleNamespace(result_callback=callback)
+        await _return_tool_result(
+            params, "check_availability", {"status": "succeeded", "data": {}}
+        )
+        callback.assert_awaited_once()
+        self.assertTrue(callback.call_args.kwargs["properties"].run_llm)
 
     async def test_demo_factory_loads_only_configured_calendar_windows(self):
         from app.actions.factory import create_business_actions

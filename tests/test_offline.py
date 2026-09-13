@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from app.config.business_config import BusinessConfig
 from app.config.settings import Settings
 from app.leads.models import CallResult
-from app.leads.storage import save_result
+from app.leads.storage import conversation_transcript, save_result
 from app.phone.israel_phone import normalize_israeli_phone
 
 
@@ -271,14 +271,40 @@ class ResultTests(unittest.TestCase):
     def test_storage(self):
         with tempfile.TemporaryDirectory() as directory:
             result = CallResult(customer_name="נועה")
-            path = save_result(result, Path(directory), summary_status="complete")
+            transcript = [
+                {"role": "user", "content": "שלום, אני צריך עזרה"},
+                {"role": "assistant", "content": "בשמחה, איך אפשר לעזור?"},
+            ]
+            path = save_result(
+                result,
+                Path(directory),
+                summary_status="complete",
+                transcript=transcript,
+            )
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["result"]["customer_name"], "נועה")
+            self.assertEqual(saved["transcript"], transcript)
             self.assertIsNotNone(datetime.fromisoformat(saved["saved_at"]).tzinfo)
             report = path.with_suffix(".txt").read_text(encoding="utf-8")
             self.assertIn("Результат звонка", report)
             self.assertIn("Имя клиента: נועה", report)
+            self.assertIn("Полный текст разговора", report)
+            self.assertIn("Клиент: שלום, אני צריך עזרה", report)
+            self.assertIn("Агент: בשמחה, איך אפשר לעזור?", report)
             self.assertEqual(len(list(Path(directory).iterdir())), 2)
+
+    def test_transcript_excludes_prompts_and_tool_metadata(self):
+        transcript = conversation_transcript([
+            {"role": "developer", "content": "Internal instruction"},
+            {"role": "user", "content": "  שלום  "},
+            {"role": "tool", "content": "ignored"},
+            {"role": "assistant", "content": "  במה אפשר לעזור?  "},
+            {"role": "assistant", "content": [{"type": "tool_call"}]},
+        ])
+        self.assertEqual(transcript, [
+            {"role": "user", "content": "שלום"},
+            {"role": "assistant", "content": "במה אפשר לעזור?"},
+        ])
 
     def test_no_model_defaults_or_key_in_repr(self):
         settings = Settings(
@@ -351,6 +377,95 @@ class ResultTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_time_tts_uses_natural_hebrew_clock(self):
+        from app.voice.time_speech import TimeSpeechFormatter, format_times_for_speech
+
+        self.assertEqual(
+            format_times_for_speech("יש תור ב-16:00", "he"),
+            "יש תור בארבע אחר הצהריים",
+        )
+        self.assertEqual(
+            format_times_for_speech("ב-09:30 או ב-14:00", "he"),
+            "בתשע וחצי בבוקר או בשתיים בצהריים",
+        )
+        formatter = TimeSpeechFormatter()
+        await formatter("The available time is", "sentence")
+        self.assertEqual(await formatter("16:00", "sentence"), "four PM")
+
+    async def test_short_stt_interim_is_promoted_when_final_is_missing(self):
+        from pipecat.frames.frames import (
+            InterimTranscriptionFrame,
+            TranscriptionFrame,
+            VADUserStoppedSpeakingFrame,
+        )
+        from pipecat.processors.frame_processor import FrameDirection
+        from app.voice.short_utterance import ShortUtteranceFinalizer
+
+        processor = ShortUtteranceFinalizer(fallback_delay=0.01)
+        forwarded = []
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            forwarded.append((frame, direction))
+
+        async def cancel(task, timeout=None):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        processor.push_frame = push
+        processor.create_task = lambda coroutine, name=None: asyncio.create_task(coroutine)
+        processor.cancel_task = cancel
+        await processor.process_frame(
+            InterimTranscriptionFrame("כן", "caller", "2026-09-13T00:00:00Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.03)
+
+        finals = [frame for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)]
+        self.assertEqual([frame.text for frame in finals], ["כן"])
+        self.assertTrue(finals[0].finalized)
+
+    async def test_real_stt_final_prevents_interim_fallback(self):
+        from pipecat.frames.frames import (
+            InterimTranscriptionFrame,
+            TranscriptionFrame,
+            VADUserStoppedSpeakingFrame,
+        )
+        from pipecat.processors.frame_processor import FrameDirection
+        from app.voice.short_utterance import ShortUtteranceFinalizer
+
+        processor = ShortUtteranceFinalizer(fallback_delay=0.02)
+        forwarded = []
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            forwarded.append((frame, direction))
+
+        async def cancel(task, timeout=None):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        processor.push_frame = push
+        processor.create_task = lambda coroutine, name=None: asyncio.create_task(coroutine)
+        processor.cancel_task = cancel
+        await processor.process_frame(
+            InterimTranscriptionFrame("נכון", "caller", "2026-09-13T00:00:00Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+        await processor.process_frame(
+            TranscriptionFrame("נכון", "caller", "2026-09-13T00:00:01Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await asyncio.sleep(0.04)
+
+        finals = [frame for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)]
+        self.assertEqual([frame.text for frame in finals], ["נכון"])
+        self.assertFalse(finals[0].finalized)
+
     async def test_final_goodbye_detection(self):
         from app.voice.pipeline import is_final_goodbye
 

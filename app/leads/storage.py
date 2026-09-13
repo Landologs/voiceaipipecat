@@ -12,6 +12,7 @@ def render_text_report(
     *,
     saved_at: datetime,
     summary_status: str,
+    transcript: list[dict[str, str]],
 ) -> str:
     """Create a human-readable local companion to the machine-readable JSON result."""
     fields = (
@@ -37,11 +38,22 @@ def render_text_report(
         f"Сохранено: {saved_at.isoformat()}",
     ]
     lines.extend(f"{label}: {value}" for label, value in fields if value)
+    if transcript:
+        lines.extend(("", "Полный текст разговора"))
+        for message in transcript:
+            speaker = "Клиент" if message["role"] == "user" else "Агент"
+            lines.append(f"{speaker}: {message['content']}")
     return "\n".join(lines) + "\n"
 
 
 class LeadRepository(Protocol):
-    def save(self, result: CallResult, *, summary_status: str = "complete") -> Path: ...
+    def save(
+        self,
+        result: CallResult,
+        *,
+        summary_status: str = "complete",
+        transcript: list[dict[str, str]] | None = None,
+    ) -> Path: ...
     def get(self, call_id: str) -> CallResult | None: ...
 
 
@@ -51,8 +63,15 @@ class JsonLeadRepository:
     def __init__(self, directory: Path):
         self.directory = directory
 
-    def save(self, result: CallResult, *, summary_status: str = "complete") -> Path:
+    def save(
+        self,
+        result: CallResult,
+        *,
+        summary_status: str = "complete",
+        transcript: list[dict[str, str]] | None = None,
+    ) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
+        transcript = transcript or []
         call_id = result.call_id or uuid4().hex
         result.call_id = call_id
         target = self.directory / f"{call_id}.json"
@@ -65,6 +84,7 @@ class JsonLeadRepository:
             "saved_at": saved_at.isoformat(),
             "summary_status": summary_status,
             "result": result.model_dump(mode="json"),
+            "transcript": transcript,
         }
         try:
             with temporary.open("x", encoding="utf-8") as stream:
@@ -74,7 +94,10 @@ class JsonLeadRepository:
             temporary.replace(target)
             with text_temporary.open("x", encoding="utf-8") as stream:
                 stream.write(render_text_report(
-                    result, saved_at=saved_at, summary_status=summary_status
+                    result,
+                    saved_at=saved_at,
+                    summary_status=summary_status,
+                    transcript=transcript,
                 ))
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -92,5 +115,27 @@ class JsonLeadRepository:
         return CallResult.model_validate(payload["result"])
 
 
-def save_result(result: CallResult, directory: Path, *, summary_status: str) -> Path:
-    return JsonLeadRepository(directory).save(result, summary_status=summary_status)
+def conversation_transcript(messages: list) -> list[dict[str, str]]:
+    """Keep the completed caller and agent turns, excluding prompts and tool metadata."""
+    transcript = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            transcript.append({"role": message["role"], "content": content.strip()})
+    return transcript
+
+
+def save_result(
+    result: CallResult,
+    directory: Path,
+    *,
+    summary_status: str,
+    transcript: list[dict[str, str]] | None = None,
+) -> Path:
+    return JsonLeadRepository(directory).save(
+        result,
+        summary_status=summary_status,
+        transcript=transcript,
+    )

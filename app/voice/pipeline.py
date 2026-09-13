@@ -24,10 +24,12 @@ from app.actions.tools import build_pipecat_tools
 from app.diagnostics.latency import create_latency_observers
 from app.knowledge.processor import KnowledgeContextProcessor
 from app.leads.models import CallResult
-from app.leads.storage import save_result
+from app.leads.storage import conversation_transcript, save_result
 from app.summaries.call_summary import summarize
 from app.voice.live_display import LiveInputDisplay, LiveResponseDisplay
 from app.voice.phone_speech import PhoneSpeechFormatter
+from app.voice.short_utterance import ShortUtteranceFinalizer
+from app.voice.time_speech import TimeSpeechFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +161,7 @@ def create_tts(settings):
                 model=settings.tts_model, voice=settings.tts_voice
             ),
         )
+    service.add_text_transformer(TimeSpeechFormatter())
     service.add_text_transformer(PhoneSpeechFormatter())
     return service
 
@@ -181,6 +184,8 @@ def build_pipeline(settings, business, transport=None):
     knowledge = KnowledgeContextProcessor()
 
     processors = [transport.input(), stt]
+    if settings.stt_provider == "openai":
+        processors.append(ShortUtteranceFinalizer())
     if settings.show_live_transcripts:
         processors.append(LiveInputDisplay())
     processors.extend([user, knowledge, llm])
@@ -202,8 +207,9 @@ def build_pipeline(settings, business, transport=None):
 
     @user.event_handler("on_user_turn_stopped")
     async def user_turn(aggregator, strategy, message):
-        logger.info("Caller speech turn ended%s", ": " + message.content
-                    if settings.log_transcripts and not settings.show_live_transcripts and message.content else "")
+        if not settings.show_live_transcripts:
+            logger.info("Caller speech turn ended%s", ": " + message.content
+                        if settings.log_transcripts and message.content else "")
 
     @assistant.event_handler("on_assistant_turn_stopped")
     async def assistant_turn(aggregator, message):
@@ -285,7 +291,12 @@ async def run_voice_session(
         result.call_started_at = started
         result.call_ended_at = datetime.now(timezone.utc)
         result = worker.app_resources.apply_verified_calendar_state(result)
-        path = save_result(result, settings.results_path, summary_status=status)
+        path = save_result(
+            result,
+            settings.results_path,
+            summary_status=status,
+            transcript=conversation_transcript(context.get_messages()),
+        )
         logger.info("%s conversation completed; structured result saved: %s (status=%s)",
                     source.capitalize(), path, status)
     return interrupted

@@ -6,17 +6,26 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
 class LiveInputDisplay(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self._interim = ""
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, InterimTranscriptionFrame) and frame.text:
-            print(f"\rВы (распознаётся): {frame.text}", end="", flush=True)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._interim = ""
+        elif isinstance(frame, InterimTranscriptionFrame) and frame.text:
+            self._interim += frame.text
+            print(f"\rВы (распознаётся): {self._interim}", end="", flush=True)
         elif isinstance(frame, TranscriptionFrame) and frame.text:
             print(f"\rВы: {frame.text}")
+            self._interim = ""
         await self.push_frame(frame, direction)
 
 

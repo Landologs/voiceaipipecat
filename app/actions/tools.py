@@ -1,9 +1,23 @@
 from datetime import datetime
+import logging
 
+from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from app.actions.service import BusinessActions
 from app.leads.models import CallResult
+
+logger = logging.getLogger(__name__)
+
+
+async def _return_tool_result(params: FunctionCallParams, tool_name: str, result):
+    """Return a final tool result and always request a spoken LLM follow-up."""
+    payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+    status = payload.get("status", "unknown") if isinstance(payload, dict) else "unknown"
+    logger.info("Business tool completed: %s status=%s", tool_name, status)
+    await params.result_callback(
+        payload, properties=FunctionCallResultProperties(run_llm=True)
+    )
 
 
 def build_pipecat_tools(actions: BusinessActions):
@@ -14,7 +28,7 @@ def build_pipecat_tools(actions: BusinessActions):
         try:
             parsed_start, parsed_end = datetime.fromisoformat(start), datetime.fromisoformat(end)
         except (TypeError, ValueError):
-            await params.result_callback({
+            await _return_tool_result(params, "check_availability", {
                 "status": "needs_clarification", "message": "Use ISO datetimes with UTC offsets"
             })
             return
@@ -23,7 +37,7 @@ def build_pipecat_tools(actions: BusinessActions):
             end=parsed_end,
             duration_minutes=duration_minutes or None,
         )
-        await params.result_callback(result.model_dump(mode="json"))
+        await _return_tool_result(params, "check_availability", result)
 
     async def create_appointment(
         params: FunctionCallParams,
@@ -40,7 +54,7 @@ def build_pipecat_tools(actions: BusinessActions):
         try:
             parsed_start = datetime.fromisoformat(start)
         except (TypeError, ValueError):
-            await params.result_callback({
+            await _return_tool_result(params, "create_appointment", {
                 "status": "needs_clarification", "message": "Use an ISO datetime with UTC offset"
             })
             return
@@ -54,7 +68,7 @@ def build_pipecat_tools(actions: BusinessActions):
             notes=notes,
             language=language,
         )
-        await params.result_callback(result.model_dump(mode="json"))
+        await _return_tool_result(params, "create_appointment", result)
 
     async def cancel_appointment(
         params: FunctionCallParams, appointment_id: str, phone_raw: str
@@ -63,7 +77,7 @@ def build_pipecat_tools(actions: BusinessActions):
         result = await actions.cancel_appointment(
             appointment_id=appointment_id, phone_raw=phone_raw
         )
-        await params.result_callback(result.model_dump(mode="json"))
+        await _return_tool_result(params, "cancel_appointment", result)
 
     async def get_appointment(
         params: FunctionCallParams, appointment_id: str, phone_raw: str
@@ -72,7 +86,7 @@ def build_pipecat_tools(actions: BusinessActions):
         result = await actions.get_appointment(
             appointment_id=appointment_id, phone_raw=phone_raw
         )
-        await params.result_callback(result.model_dump(mode="json"))
+        await _return_tool_result(params, "get_appointment", result)
 
     async def reschedule_appointment(
         params: FunctionCallParams, appointment_id: str, phone_raw: str, new_start: str
@@ -81,14 +95,14 @@ def build_pipecat_tools(actions: BusinessActions):
         try:
             parsed_start = datetime.fromisoformat(new_start)
         except (TypeError, ValueError):
-            await params.result_callback({
+            await _return_tool_result(params, "reschedule_appointment", {
                 "status": "needs_clarification", "message": "Use an ISO datetime with UTC offset"
             })
             return
         result = await actions.reschedule_appointment(
             appointment_id=appointment_id, phone_raw=phone_raw, new_start=parsed_start
         )
-        await params.result_callback(result.model_dump(mode="json"))
+        await _return_tool_result(params, "reschedule_appointment", result)
 
     async def save_lead(
         params: FunctionCallParams,
@@ -112,14 +126,12 @@ def build_pipecat_tools(actions: BusinessActions):
             result = actions.save_lead(lead)
         except Exception:
             result = {"status": "needs_clarification", "message": "Lead fields are invalid"}
-        await params.result_callback(
-            result.model_dump(mode="json") if hasattr(result, "model_dump") else result
-        )
+        await _return_tool_result(params, "save_lead", result)
 
     async def get_business_info(params: FunctionCallParams, topic: str = ""):
         """Return only approved business configuration and current hours status."""
         result = actions.get_business_info(topic=topic)
-        await params.result_callback(result.model_dump(mode="json"))
+        await _return_tool_result(params, "get_business_info", result)
 
     return [
         check_availability,
