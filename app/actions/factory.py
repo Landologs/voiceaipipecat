@@ -42,7 +42,9 @@ def _demo_calendar(settings, business, at: datetime) -> MockCalendar:
     )
 
 
-def create_business_actions(settings, business, at: datetime) -> BusinessActions:
+def create_business_actions(
+    settings, business, at: datetime, *, caller_phone: str = ""
+) -> BusinessActions:
     provider = business.calendar.provider
     if provider == "mock" and settings.demo_mode and settings.calendar_path:
         calendar = _demo_calendar(settings, business, at)
@@ -58,4 +60,5 @@ def create_business_actions(settings, business, at: datetime) -> BusinessActions
         calendar,
         JsonLeadRepository(settings.results_path),
         whatsapp,
+        caller_phone=caller_phone,
     )

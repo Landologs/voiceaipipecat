@@ -1,6 +1,35 @@
 import json
+import re
+from typing import Any
 from openai import AsyncOpenAI
 from app.leads.models import CallResult
+
+
+def normalize_summary_payload(payload: Any) -> dict:
+    """Keep usable extraction fields when one model-generated field is invalid."""
+    if not isinstance(payload, dict):
+        return {}
+    allowed = set(CallResult.model_fields)
+    result = {key: value for key, value in payload.items() if key in allowed}
+    language_aliases = {
+        "hebrew": "he", "עברית": "he", "russian": "ru", "русский": "ru",
+        "english": "en",
+    }
+    language = str(result.get("language", "")).strip().casefold()
+    language = language_aliases.get(language, language)
+    result["language"] = language if re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", language) else ""
+    if result.get("urgency") not in {"standard", "urgent", "emergency"}:
+        result["urgency"] = "standard"
+    status = result.get("appointment_status")
+    valid_statuses = {"not_requested", "pending", "booked", "cancelled", "rescheduled", "failed"}
+    if status not in valid_statuses:
+        result["appointment_status"] = "pending" if status else "not_requested"
+    if (
+        result.get("appointment_status") in {"booked", "cancelled", "rescheduled"}
+        and not str(result.get("appointment_id", "")).strip()
+    ):
+        result["appointment_status"] = "pending"
+    return result
 
 
 async def summarize(messages: list, settings, *, after_hours: bool) -> CallResult:
@@ -27,6 +56,7 @@ async def summarize(messages: list, settings, *, after_hours: bool) -> CallResul
                       {"role": "user", "content": json.dumps(conversation, ensure_ascii=False)}],
             response_format={"type": "json_object"},
         )
-    result = CallResult.model_validate_json(response.choices[0].message.content or "")
+    payload = json.loads(response.choices[0].message.content or "{}")
+    result = CallResult.model_validate(normalize_summary_payload(payload))
     result.after_hours = after_hours
     return result

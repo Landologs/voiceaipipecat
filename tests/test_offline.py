@@ -180,7 +180,7 @@ class KnowledgeTests(unittest.TestCase):
         profile.update("Можно по-русски?", [])
         self.assertEqual(profile.current_language, "ru")
 
-    def test_substantive_russian_switch_and_clear_hebrew_return(self):
+    def test_language_switch_requires_explicit_russian_request(self):
         from app.knowledge.adaptation import ConversationProfile
 
         profile = ConversationProfile()
@@ -189,17 +189,23 @@ class KnowledgeTests(unittest.TestCase):
         profile.update("У меня полностью забилась раковина", self.store.search(
             "У меня полностью забилась раковина"
         ))
+        self.assertEqual(profile.current_language, "he")
+        profile.update("Вы говорите по-русски?", [])
         self.assertEqual(profile.current_language, "ru")
-        profile.update("עכשיו אני רוצה להמשיך בעברית", [])
+        profile.update("אפשר לדבר בעברית?", [])
         self.assertEqual(profile.current_language, "he")
 
-    def test_substantive_hebrew_to_english_switch(self):
+    def test_english_words_and_addresses_do_not_switch_without_request(self):
         from app.knowledge.adaptation import ConversationProfile
 
         profile = ConversationProfile()
         profile.update("The kitchen sink is completely blocked", self.store.search(
             "The kitchen sink is completely blocked"
         ))
+        self.assertEqual(profile.current_language, "he")
+        profile.update("Rothschild Street Tel Aviv", [])
+        self.assertEqual(profile.current_language, "he")
+        profile.update("Do you speak English?", [])
         self.assertEqual(profile.current_language, "en")
 
     def test_mixed_hebrew_product_words_do_not_switch_language(self):
@@ -258,8 +264,22 @@ class ResultTests(unittest.TestCase):
         )
         self.assertIn("גבולות מידע פנימיים", prompt)
         self.assertIn("מיזוג פלוס", prompt)
+        self.assertIn('היי, זה מיזוג פלוס. מה נשמע?', prompt)
+        self.assertNotIn("עוזרת מבוססת בינה מלאכותית", prompt)
         self.assertIn("check_availability", prompt)
         self.assertNotIn("מיזוג פלוס — הדגמה", prompt)
+
+    def test_prompt_uses_valid_inbound_caller_phone(self):
+        from app.agent.prompt_loader import load_prompt
+
+        business = BusinessConfig(company_name="Test", agent_name="Test")
+        prompt = load_prompt(
+            business,
+            datetime(2026, 9, 10, 9, tzinfo=ZoneInfo("Asia/Jerusalem")),
+            caller_phone="+972501234567",
+        )
+        self.assertIn("+972501234567", prompt)
+        self.assertIn("אל תשאלי את הפונה", prompt)
 
     def test_booking_and_phone_guardrails(self):
         with self.assertRaises(ValidationError):
@@ -271,6 +291,8 @@ class ResultTests(unittest.TestCase):
     def test_storage(self):
         with tempfile.TemporaryDirectory() as directory:
             result = CallResult(customer_name="נועה")
+            recording = Path(directory) / "test-call.wav"
+            recording.write_bytes(b"RIFF-test-recording")
             transcript = [
                 {"role": "user", "content": "שלום, אני צריך עזרה"},
                 {"role": "assistant", "content": "בשמחה, איך אפשר לעזור?"},
@@ -280,18 +302,38 @@ class ResultTests(unittest.TestCase):
                 Path(directory),
                 summary_status="complete",
                 transcript=transcript,
+                recording_path=recording,
             )
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["result"]["customer_name"], "נועה")
             self.assertEqual(saved["transcript"], transcript)
+            self.assertEqual(saved["recording_file"], "test-call.wav")
             self.assertIsNotNone(datetime.fromisoformat(saved["saved_at"]).tzinfo)
             report = path.with_suffix(".txt").read_text(encoding="utf-8")
             self.assertIn("Результат звонка", report)
             self.assertIn("Имя клиента: נועה", report)
+            self.assertIn("Аудиозапись: test-call.wav", report)
             self.assertIn("Полный текст разговора", report)
             self.assertIn("Клиент: שלום, אני צריך עזרה", report)
             self.assertIn("Агент: בשמחה, איך אפשר לעזור?", report)
-            self.assertEqual(len(list(Path(directory).iterdir())), 2)
+            self.assertEqual(len(list(Path(directory).iterdir())), 3)
+
+    def test_stereo_call_recording_is_valid_wav(self):
+        import wave
+
+        from app.voice.recording import write_pcm_wav
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "call.wav"
+            # Four stereo sample frames: left is caller, right is agent.
+            audio = b"\x01\x00\x02\x00" * 4
+            write_pcm_wav(audio, target, sample_rate=16000, num_channels=2)
+            with wave.open(str(target), "rb") as stream:
+                self.assertEqual(stream.getnchannels(), 2)
+                self.assertEqual(stream.getsampwidth(), 2)
+                self.assertEqual(stream.getframerate(), 16000)
+                self.assertEqual(stream.getnframes(), 4)
+                self.assertEqual(stream.readframes(4), audio)
 
     def test_transcript_excludes_prompts_and_tool_metadata(self):
         transcript = conversation_transcript([
@@ -377,6 +419,50 @@ class ResultTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_audio_buffer_captures_both_sides_as_stereo(self):
+        from pipecat.frames.frames import EndFrame, InputAudioRawFrame, OutputAudioRawFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+        from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+        from pipecat.workers.runner import WorkerRunner
+
+        captured = []
+        audio_buffer = AudioBufferProcessor(
+            sample_rate=16000, num_channels=2, auto_start_recording=True
+        )
+
+        @audio_buffer.event_handler("on_audio_data")
+        async def on_audio_data(buffer, audio, sample_rate, num_channels):
+            captured.append((audio, sample_rate, num_channels))
+
+        worker = PipelineWorker(
+            Pipeline([audio_buffer]),
+            params=PipelineParams(
+                audio_in_sample_rate=16000,
+                audio_out_sample_rate=16000,
+            ),
+        )
+        runner = WorkerRunner(handle_sigint=False)
+        await runner.add_workers(worker)
+        caller_audio = b"\x01\x00" * 160
+        agent_audio = b"\x02\x00" * 160
+        await worker.queue_frames([
+            InputAudioRawFrame(
+                audio=caller_audio, sample_rate=16000, num_channels=1
+            ),
+            OutputAudioRawFrame(
+                audio=agent_audio, sample_rate=16000, num_channels=1
+            ),
+            EndFrame(),
+        ])
+        await asyncio.wait_for(runner.run(), timeout=10)
+
+        self.assertEqual(len(captured), 1)
+        mixed, sample_rate, num_channels = captured[0]
+        self.assertEqual(sample_rate, 16000)
+        self.assertEqual(num_channels, 2)
+        self.assertEqual(len(mixed), len(caller_audio) + len(agent_audio))
+
     async def test_time_tts_uses_natural_hebrew_clock(self):
         from app.voice.time_speech import TimeSpeechFormatter, format_times_for_speech
 
@@ -421,10 +507,139 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         await processor.process_frame(
             VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
         )
+        # A simple acknowledgement must be final before the turn-stop reaches
+        # the context aggregator, otherwise the LLM waits for the next utterance.
+        immediate_finals = [
+            frame for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)
+        ]
+        self.assertEqual([frame.text for frame in immediate_finals], ["כן"])
         await asyncio.sleep(0.03)
 
         finals = [frame for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)]
         self.assertEqual([frame.text for frame in finals], ["כן"])
+        self.assertTrue(finals[0].finalized)
+        frame_types = [type(frame) for frame, _ in forwarded]
+        self.assertLess(
+            frame_types.index(TranscriptionFrame),
+            frame_types.index(VADUserStoppedSpeakingFrame),
+        )
+
+    async def test_romanized_hebrew_yes_and_no_are_canonicalized(self):
+        from pipecat.frames.frames import TranscriptionFrame
+        from pipecat.processors.frame_processor import FrameDirection
+        from app.voice.short_utterance import ShortUtteranceFinalizer
+
+        processor = ShortUtteranceFinalizer()
+        forwarded = []
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            forwarded.append((frame, direction))
+
+        processor.push_frame = push
+        await processor.process_frame(
+            TranscriptionFrame("Can", "caller", "2026-09-13T00:00:00Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            TranscriptionFrame("lo.", "caller", "2026-09-13T00:00:01Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+
+        self.assertEqual(
+            [frame.text for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)],
+            ["כן", "לא"],
+        )
+
+    def test_additional_hebrew_acknowledgement_transliteration_aliases(self):
+        from app.voice.short_utterance import ShortUtteranceFinalizer
+
+        self.assertEqual(ShortUtteranceFinalizer._canonical_acknowledgement("kan"), "כן")
+        self.assertEqual(ShortUtteranceFinalizer._canonical_acknowledgement("loe"), "לא")
+        self.assertEqual(ShortUtteranceFinalizer._canonical_acknowledgement("love"), "לא")
+
+    def test_twilio_vad_accepts_one_short_speech_frame(self):
+        from app.voice.pipeline import TELEPHONY_VAD_PARAMS
+
+        self.assertLessEqual(TELEPHONY_VAD_PARAMS.start_secs, 0.032)
+        self.assertLess(TELEPHONY_VAD_PARAMS.confidence, 0.7)
+        self.assertLess(TELEPHONY_VAD_PARAMS.min_volume, 0.6)
+
+    async def test_real_upstream_vad_stop_promotes_short_interim(self):
+        from pipecat.frames.frames import (
+            InterimTranscriptionFrame,
+            TranscriptionFrame,
+            VADUserStoppedSpeakingFrame,
+        )
+        from pipecat.processors.frame_processor import FrameDirection
+        from app.voice.short_utterance import ShortUtteranceFinalizer
+
+        processor = ShortUtteranceFinalizer()
+        forwarded = []
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            forwarded.append((frame, direction))
+
+        processor.push_frame = push
+        await processor.process_frame(
+            InterimTranscriptionFrame("Can", "caller", "2026-09-14T00:00:00Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            VADUserStoppedSpeakingFrame(), FrameDirection.UPSTREAM
+        )
+
+        finals = [
+            (frame, direction)
+            for frame, direction in forwarded
+            if isinstance(frame, TranscriptionFrame)
+        ]
+        self.assertEqual([(frame.text, direction) for frame, direction in finals], [
+            ("כן", FrameDirection.DOWNSTREAM)
+        ])
+        self.assertTrue(finals[0][0].finalized)
+        self.assertTrue(any(
+            isinstance(frame, VADUserStoppedSpeakingFrame)
+            and direction == FrameDirection.UPSTREAM
+            for frame, direction in forwarded
+        ))
+
+    async def test_upstream_vad_fallback_is_deduplicated_by_late_final(self):
+        from pipecat.frames.frames import (
+            InterimTranscriptionFrame,
+            TranscriptionFrame,
+            VADUserStoppedSpeakingFrame,
+        )
+        from pipecat.processors.frame_processor import FrameDirection
+        from app.voice.short_utterance import ShortUtteranceFinalizer
+
+        processor = ShortUtteranceFinalizer(fallback_delay=0.01)
+        forwarded = []
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            forwarded.append((frame, direction))
+
+        async def cancel(task, timeout=None):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        processor.push_frame = push
+        processor.create_task = lambda coroutine, name=None: asyncio.create_task(coroutine)
+        processor.cancel_task = cancel
+        await processor.process_frame(
+            InterimTranscriptionFrame("רמת גן", "caller", "2026-09-14T00:00:00Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            VADUserStoppedSpeakingFrame(), FrameDirection.UPSTREAM
+        )
+        await asyncio.sleep(0.03)
+        await processor.process_frame(
+            TranscriptionFrame("רמת גן", "caller", "2026-09-14T00:00:01Z"),
+            FrameDirection.DOWNSTREAM,
+        )
+
+        finals = [frame for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)]
+        self.assertEqual([frame.text for frame in finals], ["רמת גן"])
         self.assertTrue(finals[0].finalized)
 
     async def test_real_stt_final_prevents_interim_fallback(self):
@@ -450,28 +665,33 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         processor.create_task = lambda coroutine, name=None: asyncio.create_task(coroutine)
         processor.cancel_task = cancel
         await processor.process_frame(
-            InterimTranscriptionFrame("נכון", "caller", "2026-09-13T00:00:00Z"),
+            InterimTranscriptionFrame("רמת גן", "caller", "2026-09-13T00:00:00Z"),
             FrameDirection.DOWNSTREAM,
         )
         await processor.process_frame(
             VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
         )
         await processor.process_frame(
-            TranscriptionFrame("נכון", "caller", "2026-09-13T00:00:01Z"),
+            TranscriptionFrame("רמת גן", "caller", "2026-09-13T00:00:01Z"),
             FrameDirection.DOWNSTREAM,
         )
         await asyncio.sleep(0.04)
 
         finals = [frame for frame, _ in forwarded if isinstance(frame, TranscriptionFrame)]
-        self.assertEqual([frame.text for frame in finals], ["נכון"])
+        self.assertEqual([frame.text for frame in finals], ["רמת גן"])
         self.assertFalse(finals[0].finalized)
+        frame_types = [type(frame) for frame, _ in forwarded]
+        self.assertLess(
+            frame_types.index(TranscriptionFrame),
+            frame_types.index(VADUserStoppedSpeakingFrame),
+        )
 
     async def test_final_goodbye_detection(self):
         from app.voice.pipeline import is_final_goodbye
 
-        self.assertTrue(is_final_goodbye("תודה שפנית אלינו, להתראות."))
-        self.assertTrue(is_final_goodbye("Спасибо, что обратились к нам. До свидания."))
-        self.assertTrue(is_final_goodbye("Thank you for contacting us. Goodbye."))
+        self.assertTrue(is_final_goodbye("תודה שהתקשרת אלינו, להתראות."))
+        self.assertFalse(is_final_goodbye("Спасибо, что обратились к нам. До свидания."))
+        self.assertFalse(is_final_goodbye("Thank you for contacting us. Goodbye."))
         self.assertFalse(is_final_goodbye("תודה, האם דרוש עוד משהו?"))
 
     async def test_openai_realtime_stt_is_not_pinned_to_hebrew(self):
@@ -559,6 +779,44 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "LLM_MODEL"):
             Settings(api_key="offline-placeholder").validate_text()
 
+    def test_elevenlabs_tts_validation_and_construction_without_network(self):
+        from app.voice.pipeline import create_tts
+
+        settings = Settings(
+            api_key="offline-openai",
+            elevenlabs_api_key="offline-elevenlabs",
+            elevenlabs_voice_id="voice-id",
+            stt_provider="openai",
+            llm_provider="openai",
+            tts_provider="elevenlabs",
+            stt_model="gpt-transcribe",
+            llm_model="gpt-4.1-mini",
+            tts_model="eleven_v3_conversational",
+        )
+        settings.validate_voice()
+        with patch("socket.socket.connect", side_effect=AssertionError("Network forbidden")):
+            service = create_tts(settings)
+        self.assertEqual(type(service).__name__, "ElevenLabsDialogueTTSService")
+
+    async def test_elevenlabs_phone_diagnostic_dry_run_makes_no_request(self):
+        from app.voice.phone_number_tts_test import run_phone_number_tts_test
+
+        settings = Settings(
+            elevenlabs_api_key="offline-elevenlabs",
+            elevenlabs_voice_id="voice-id",
+            tts_provider="elevenlabs",
+            tts_model="eleven_v3_conversational",
+        )
+        with (
+            patch(
+                "app.voice.phone_number_tts_test.synthesize_dialogue",
+                side_effect=AssertionError("Network forbidden"),
+            ),
+            patch("builtins.print"),
+        ):
+            status = await run_phone_number_tts_test(settings, dry_run=True)
+        self.assertEqual(status, 0)
+
     async def test_rate_limit_does_not_end_session(self):
         from pipecat.utils.errors import ErrorCategory
         from app.voice.pipeline import should_end_for_error
@@ -583,6 +841,21 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.after_hours)
         sent = client.chat.completions.create.call_args.kwargs["messages"][-1]["content"]
         self.assertIn("Correction: 0521234567", sent)
+
+    def test_summary_normalization_keeps_valid_fields(self):
+        from app.summaries.call_summary import normalize_summary_payload
+
+        payload = normalize_summary_payload({
+            "customer_name": "וסילי",
+            "language": "Hebrew",
+            "appointment_status": "booked",
+            "appointment_id": "",
+            "unknown_model_field": "ignored",
+        })
+        result = CallResult.model_validate(payload)
+        self.assertEqual(result.customer_name, "וסילי")
+        self.assertEqual(result.language, "he")
+        self.assertEqual(result.appointment_status, "pending")
 
     async def test_gemini_summary_uses_compatibility_endpoint(self):
         from app.config.settings import GEMINI_OPENAI_BASE_URL
@@ -659,8 +932,27 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with patch("socket.socket.connect", side_effect=AssertionError("Network forbidden")):
             worker, context, started = build_pipeline(settings, business)
         self.assertIsNotNone(worker)
+        self.assertIsNotNone(worker.call_audio_buffer)
+        self.assertTrue(str(worker.call_recording_writer.target).endswith(".wav"))
         self.assertEqual(context.get_messages(), [])
         self.assertIsNotNone(started.tzinfo)
+
+    async def test_call_recording_can_be_disabled(self):
+        from app.voice.pipeline import build_pipeline
+
+        settings = Settings(
+            api_key="offline-placeholder",
+            stt_model="gpt-live-transcribe",
+            llm_model="gpt-4.1-mini",
+            tts_model="gpt-4o-mini-tts",
+            tts_voice="alloy",
+            record_call_audio=False,
+        ).for_demo()
+        business = BusinessConfig.load(settings.business_path)
+        with patch("socket.socket.connect", side_effect=AssertionError("Network forbidden")):
+            worker, _, _ = build_pipeline(settings, business)
+        self.assertIsNone(worker.call_audio_buffer)
+        self.assertIsNone(worker.call_recording_writer)
 
     async def test_empty_summary_does_not_create_client(self):
         from app.summaries.call_summary import summarize
@@ -794,7 +1086,9 @@ class TelephonyTests(unittest.TestCase):
 
         url = "wss://example.ngrok.app/twilio/media"
         signature = RequestValidator(self.settings.twilio_auth_token).compute_signature(url, {})
-        call_data = SimpleNamespace(stream_id="MZ123", call_id="CA123")
+        call_data = SimpleNamespace(
+            stream_id="MZ123", call_id="CA123", from_number="+972501234567"
+        )
         run_session = AsyncMock(return_value=False)
         with (
             patch(
@@ -810,6 +1104,9 @@ class TelephonyTests(unittest.TestCase):
             ):
                 pass
         run_session.assert_awaited_once()
+        self.assertEqual(
+            run_session.await_args.kwargs["caller_phone"], "+972501234567"
+        )
         self.assertTrue(any("media stream connected: CallSid=CA123" in line for line in logs.output))
         self.assertTrue(any("media stream disconnected: CallSid=CA123" in line for line in logs.output))
 

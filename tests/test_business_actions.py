@@ -63,6 +63,16 @@ class BusinessConfigurationTests(unittest.TestCase):
         self.assertTrue(status.after_hours)
         self.assertEqual(status.next_open_time, datetime(2026, 9, 14, 9, tzinfo=ZONE))
 
+    def test_profile_controls_greeting_and_supports_other_languages(self):
+        configured = business(
+            primary_language="fr",
+            supported_languages=["fr", "en"],
+            greetings={"fr": "Bonjour"},
+            goodbyes={"fr": "Au revoir"},
+        )
+        self.assertEqual(configured.greeting(), "Bonjour")
+        self.assertEqual(configured.goodbye(), "Au revoir")
+
 
 class MockCalendarTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -215,6 +225,56 @@ class ActionLayerTests(unittest.IsolatedAsyncioTestCase):
             timedelta(minutes=60),
         )
 
+    async def test_inbound_caller_phone_is_used_for_booking(self):
+        actions = BusinessActions(
+            self.business,
+            MockCalendar(self.business),
+            self.actions.leads,
+            self.actions.whatsapp,
+            caller_phone="+972501234567",
+        )
+        result = await actions.create_appointment(
+            customer_name="Caller",
+            phone_raw="",
+            service="inspection",
+            start=self.start,
+            caller_confirmed=True,
+        )
+        self.assertEqual(result.status, ActionStatus.SUCCEEDED)
+        self.assertEqual(
+            result.data["appointment"]["phone_normalized"], "+972501234567"
+        )
+
+    async def test_booking_enforces_configured_service_area(self):
+        configured = business(
+            service_area=["תל אביב-יפו"],
+            service_area_aliases={"תל אביב-יפו": ["תל אביב", "יפו"]},
+        )
+        actions = BusinessActions(
+            configured,
+            MockCalendar(configured),
+            self.actions.leads,
+            self.actions.whatsapp,
+        )
+        outside = await actions.create_appointment(
+            customer_name="Dana",
+            phone_raw="0501234567",
+            service="inspection",
+            start=self.start,
+            address="רבקה גובר 11, כפר סבא",
+            caller_confirmed=True,
+        )
+        self.assertEqual(outside.status, ActionStatus.NEEDS_CLARIFICATION)
+        inside = await actions.create_appointment(
+            customer_name="Dana",
+            phone_raw="0501234567",
+            service="inspection",
+            start=self.start,
+            address="הרצל 10, תל אביב",
+            caller_confirmed=True,
+        )
+        self.assertEqual(inside.status, ActionStatus.SUCCEEDED)
+
     async def test_lead_persistence_is_replaceable_repository(self):
         lead = CallResult(
             customer_name="Dana",
@@ -277,7 +337,7 @@ class ActionLayerTests(unittest.IsolatedAsyncioTestCase):
             settings, demo_business, datetime(2026, 9, 14, 8, tzinfo=ZONE)
         )
         self.assertIsInstance(actions.calendar, MockCalendar)
-        self.assertEqual(len(actions.calendar.availability_windows), 7)
+        self.assertEqual(len(actions.calendar.availability_windows), 9)
         self.assertEqual(len(actions.calendar.appointments), 5)
 
 

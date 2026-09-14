@@ -16,6 +16,7 @@ import pyaudio
 from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
 from app.config.settings import ROOT
+from app.voice.elevenlabs_dialogue_direct import synthesize_dialogue
 from app.voice.pipeline import create_tts
 from app.voice.phone_speech import group_israeli_phone_number, spoken_phone_number
 
@@ -121,7 +122,8 @@ async def synthesize(service, text: str, context_id: str) -> tuple[bytes, int, i
 
 def print_plan(settings, plan: dict[str, float | int | None]) -> None:
     print("Hebrew phone-number TTS diagnostic")
-    print(f"Provider/model/voice: {settings.tts_provider} / {settings.tts_model} / {settings.tts_voice}")
+    voice = "configured ElevenLabs voice" if settings.tts_provider == "elevenlabs" else settings.tts_voice
+    print(f"Provider/model/voice: {settings.tts_provider} / {settings.tts_model} / {voice}")
     print(f"Planned TTS requests: {plan['requests']} (10 numbers × 2 modes × {REPETITIONS} repetitions)")
     print(f"Estimated generated audio: about {plan['estimated_audio_seconds'] / 60:.1f} minutes")
     if plan["estimated_cost_usd"] is None:
@@ -133,13 +135,15 @@ def print_plan(settings, plan: dict[str, float | int | None]) -> None:
 
 async def run_phone_number_tts_test(settings, *, dry_run: bool = False) -> int:
     """Play all synthetic cases and save each PCM result as a local WAV file."""
-    if settings.tts_provider not in {"openai", "gemini"}:
-        raise ValueError("TTS_PROVIDER must be openai or gemini")
+    if settings.tts_provider not in {"openai", "gemini", "elevenlabs"}:
+        raise ValueError("TTS_PROVIDER must be openai, gemini, or elevenlabs")
     missing = [name for name, value in (
         ("TTS_MODEL", settings.tts_model),
-        ("TTS_VOICE", settings.tts_voice),
+        ("TTS_VOICE", settings.tts_voice if settings.tts_provider != "elevenlabs" else "present"),
         ("OPENAI_API_KEY", settings.api_key if settings.tts_provider == "openai" else "present"),
         ("GEMINI_API_KEY", settings.gemini_api_key if settings.tts_provider == "gemini" else "present"),
+        ("ELEVENLABS_API_KEY", settings.elevenlabs_api_key if settings.tts_provider == "elevenlabs" else "present"),
+        ("ELEVENLABS_VOICE_ID", settings.elevenlabs_voice_id if settings.tts_provider == "elevenlabs" else "present"),
     ) if not value]
     if missing:
         raise ValueError("Required for phone TTS test: " + ", ".join(missing))
@@ -154,7 +158,7 @@ async def run_phone_number_tts_test(settings, *, dry_run: bool = False) -> int:
         return 0
 
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    service = create_standalone_tts(settings)
+    service = None if settings.tts_provider == "elevenlabs" else create_standalone_tts(settings)
     audio = pyaudio.PyAudio()
     successes = 0
     latencies: list[float] = []
@@ -170,9 +174,17 @@ async def run_phone_number_tts_test(settings, *, dry_run: bool = False) -> int:
                     )
                     started = time.perf_counter()
                     try:
-                        pcm, rate, channels = await synthesize(
-                            service, representation.tts_input, f"phone-{index}-{representation.mode}-{repetition}"
-                        )
+                        if settings.tts_provider == "elevenlabs":
+                            pcm, rate, channels, _ = await synthesize_dialogue(
+                                api_key=settings.elevenlabs_api_key,
+                                voice_id=settings.elevenlabs_voice_id,
+                                model=settings.tts_model,
+                                text=representation.tts_input,
+                            )
+                        else:
+                            pcm, rate, channels = await synthesize(
+                                service, representation.tts_input, f"phone-{index}-{representation.mode}-{repetition}"
+                            )
                         latency = time.perf_counter() - started
                         latencies.append(latency)
                         filename = f"{index:02d}_{representation.mode}_rep{repetition}.wav"
@@ -195,7 +207,7 @@ async def run_phone_number_tts_test(settings, *, dry_run: bool = False) -> int:
                         await asyncio.sleep(PAUSE_SECONDS)
     finally:
         audio.terminate()
-        client = getattr(service, "_client", None)
+        client = getattr(service, "_client", None) if service else None
         close = getattr(client, "close", None)
         if close:
             await close()

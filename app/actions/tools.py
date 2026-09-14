@@ -42,10 +42,10 @@ def build_pipecat_tools(actions: BusinessActions):
     async def create_appointment(
         params: FunctionCallParams,
         customer_name: str,
-        phone_raw: str,
         service: str,
         start: str,
         caller_confirmed: bool,
+        phone_raw: str = "",
         address: str = "",
         notes: str = "",
         language: str = "he",

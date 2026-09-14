@@ -7,13 +7,15 @@
         {"start": "09:00", "end": "10:00", "status": "occupied"},
         {"start": "10:30", "end": "11:30", "status": "available"},
         {"start": "13:00", "end": "14:00", "status": "occupied"},
-        {"start": "15:30", "end": "16:30", "status": "available"}
+        {"start": "15:30", "end": "16:30", "status": "available"},
+        {"start": "19:00", "end": "20:00", "status": "available"}
       ]
     },
     {
       "offset": 1,
       "slots": [
         {"start": "09:30", "end": "10:30", "status": "available"},
+        {"start": "09:00", "end": "10:00", "status": "available"},
         {"start": "11:00", "end": "12:00", "status": "occupied"},
         {"start": "14:00", "end": "15:00", "status": "available"},
         {"start": "16:00", "end": "17:00", "status": "available"}

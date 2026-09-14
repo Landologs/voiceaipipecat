@@ -49,7 +49,7 @@ class AppointmentRequest(BaseModel):
     duration_minutes: int = Field(ge=5, le=1440)
     address: str = Field(default="", max_length=500)
     notes: str = Field(default="", max_length=2000)
-    language: str = Field(default="he", pattern="^(he|ru|en)$")
+    language: str = Field(default="he", pattern=r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2})?$")
 
     @field_validator("start")
     @classmethod

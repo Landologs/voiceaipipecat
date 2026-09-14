@@ -134,6 +134,7 @@ def create_app(settings: Settings | None = None, business: BusinessConfig | None
                 return
             call_sid = call_data.call_id
             stream_sid = call_data.stream_id
+            caller_phone = getattr(call_data, "from_number", "") or ""
             logger.info(
                 "Twilio media stream connected: CallSid=%s StreamSid=%s",
                 call_sid,
@@ -160,6 +161,7 @@ def create_app(settings: Settings | None = None, business: BusinessConfig | None
                 transport,
                 source="twilio",
                 session_id=call_sid,
+                caller_phone=caller_phone,
             )
         except ValueError as exc:
             logger.warning("Twilio stream rejected: %s", exc)

@@ -1,6 +1,8 @@
 {
   "company_name": "מיזוג פלוס",
-  "agent_name": "נועה",
+  "agent_name": "אורי",
+  "profession": "שירות מיזוג אוויר",
+  "country_code": "IL",
   "primary_language": "he",
   "supported_languages": ["he", "ru", "en"],
   "timezone": "Asia/Jerusalem",
@@ -22,6 +24,7 @@
     "התקנת מזגן עילי": "התקנה בכפוף לבדיקת תנאי המקום."
   },
   "service_area": ["תל אביב-יפו", "רמת גן", "גבעתיים"],
+  "service_area_aliases": {"תל אביב-יפו": ["תל אביב", "יפו"]},
   "known_prices": {
     "בדיקת תקלה במזגן": "250 ש״ח",
     "ניקוי מזגן עילי": "החל מ-300 ש״ח",
@@ -38,8 +41,19 @@
     "אחריות": "פרטי האחריות יימסרו לאחר בדיקת סוג השירות."
   },
   "after_hours_policy": "אפשר לתעד את הפנייה ולבקש חזרה בשעות הפעילות.",
-  "urgent_call_policy": "יש לתעד בקצרה את הדחיפות; אין לתת ייעוץ מקצועי או להבטיח הגעה.",
+  "urgent_call_policy": "יש לסמן urgent, לבדוק היום בערב או מחר בבוקר ביומן, ולהציע את החלון הקרוב הזמין. אין לתת ייעוץ מקצועי או להבטיח הגעה לפני אישור היומן.",
   "callback_policy": "אפשר לתעד בקשה לחזרה, ללא התחייבות למועד.",
   "escalation_policy": "במקרה דחוף יש לתעד את הפרטים בלבד; אין העברה לאדם אמיתי.",
+  "greetings": {"he": "היי, זה מיזוג פלוס. מה נשמע?"},
+  "goodbyes": {"he": "תודה שהתקשרת אלינו, להתראות"},
+  "conversation_style": ["ידידותי", "טבעי", "קצר", "שאלה אחת בכל פעם"],
+  "language_switch_policy": "explicit_request_only",
+  "required_intake_fields": ["customer_name", "service_request", "address", "preferred_time"],
+  "address_default_country": "IL",
+  "address_confirmation_required": true,
+  "never_invent_address_parts": true,
+  "prohibited_claims": ["אין להבטיח הגעה לפני אישור היומן", "אין לטעון שתור נקבע בלי מזהה תור"],
+  "prohibited_advice": ["אין לתת אבחנה מקצועית שלא קיימת בהגדרות העסק"],
+  "integrations": {"calendar": "mock", "telephony": "twilio", "address_resolver": "local"},
   "calendar": {"provider": "mock", "calendar_id": "demo-calendar"}
 }

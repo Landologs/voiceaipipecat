@@ -14,6 +14,7 @@ from app.leads.models import CallResult
 from app.leads.storage import LeadRepository
 from app.messaging.whatsapp import WhatsAppBackend
 from app.phone.israel_phone import normalize_israeli_phone
+from app.addressing.israel import assess_service_area
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,13 @@ class BusinessActions:
         calendar: CalendarBackend,
         leads: LeadRepository,
         whatsapp: WhatsAppBackend,
+        caller_phone: str = "",
     ):
         self.business = business
         self.calendar = calendar
         self.leads = leads
         self.whatsapp = whatsapp
+        self.caller_phone = normalize_israeli_phone(caller_phone)
         self.call_id = uuid4().hex
         self.verified_appointment_id = ""
         self.verified_appointment_status = "not_requested"
@@ -121,6 +124,8 @@ class BusinessActions:
                 status=ActionStatus.NEEDS_CLARIFICATION,
                 message="Explicit caller confirmation is required before booking",
             )
+        if self.caller_phone:
+            values["phone_raw"] = self.caller_phone
         values.setdefault("duration_minutes", self.business.appointment_duration_minutes)
         try:
             request = AppointmentRequest.model_validate(values)
@@ -134,6 +139,17 @@ class BusinessActions:
                 status=ActionStatus.NEEDS_CLARIFICATION,
                 message="Service is not in the approved business configuration",
             )
+        if self.business.service_area:
+            address = assess_service_area(request.address, self.business)
+            if not address.is_in_service_area:
+                return ActionResult(
+                    status=ActionStatus.NEEDS_CLARIFICATION,
+                    message=(
+                        "The address is outside the configured service area or its city "
+                        "has not been confirmed"
+                    ),
+                    data={"default_country": address.country_code},
+                )
         try:
             result = await self.calendar.create_appointment(request)
         except Exception as exc:
@@ -213,6 +229,9 @@ class BusinessActions:
 
     def save_lead(self, result: CallResult) -> ActionResult:
         result.call_id = result.call_id or self.call_id
+        if self.caller_phone:
+            result.phone_raw = self.caller_phone
+            result.phone_normalized = self.caller_phone
         try:
             self.leads.save(result, summary_status="captured")
         except (OSError, ValidationError):
@@ -242,6 +261,9 @@ class BusinessActions:
 
     def apply_verified_calendar_state(self, result: CallResult) -> CallResult:
         result.call_id = result.call_id or self.call_id
+        if self.caller_phone:
+            result.phone_raw = self.caller_phone
+            result.phone_normalized = self.caller_phone
         if self.verified_appointment_id:
             result.appointment_id = self.verified_appointment_id
             result.appointment_status = self.verified_appointment_status

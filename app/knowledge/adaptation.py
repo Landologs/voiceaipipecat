@@ -1,26 +1,27 @@
 import copy
-import re
 from dataclasses import dataclass, field
 
 from app.knowledge.retrieval import KnowledgeMatch, KnowledgeStore, default_store, normalize_text
 
 
 LANGUAGE_NAMES = {"he": "Hebrew", "ru": "Russian", "en": "English"}
-ENGLISH_EMBEDDED_WORDS = {
-    "app", "google", "iphone", "sms", "wifi", "wi", "fi", "whatsapp",
-}
 EXPLICIT_LANGUAGE_REQUESTS = {
     "ru": (
         "можно по русски", "давайте по русски", "давайте на русском",
-        "говорите по русски", "אפשר ברוסית",
+        "говорите по русски", "вы говорите по русски", "ты говоришь по русски",
+        "можем говорить по русски", "אפשר ברוסית", "אפשר לדבר ברוסית",
+        "את מדברת רוסית", "אתה מדבר רוסית",
     ),
     "en": (
         "can we speak english", "please speak english", "english please",
-        "אפשר באנגלית",
+        "do you speak english", "can you speak english", "אפשר באנגלית",
+        "אפשר לדבר באנגלית", "את מדברת אנגלית", "אתה מדבר אנגלית",
     ),
     "he": (
-        "אפשר בעברית", "בוא נחזור לעברית", "давайте на иврите",
-        "can we speak hebrew", "hebrew please",
+        "אפשר בעברית", "אפשר לדבר בעברית", "בוא נחזור לעברית",
+        "את מדברת עברית", "אתה מדבר עברית", "давайте на иврите",
+        "вы говорите на иврите", "can we speak hebrew", "do you speak hebrew",
+        "hebrew please",
     ),
 }
 UNCERTAINTY_PHRASES = (
@@ -83,28 +84,8 @@ def _explicit_language(text: str) -> str | None:
 
 
 def detect_language(text: str, current_language: str = "he") -> str | None:
-    """Conservative switch detection; one foreign word never changes language."""
-    explicit = _explicit_language(text)
-    if explicit:
-        return explicit
-
-    hebrew_words = re.findall(r"[א-ת]+", text)
-    russian_words = re.findall(r"[А-Яа-яЁё]+", text)
-    english_words = [
-        word.casefold() for word in re.findall(r"[A-Za-z]+", text)
-        if word.casefold() not in ENGLISH_EMBEDDED_WORDS
-    ]
-    hebrew_substantive = len(hebrew_words) >= 2 and sum(map(len, hebrew_words)) >= 6
-    russian_substantive = len(russian_words) >= 2 and sum(map(len, russian_words)) >= 8
-    english_substantive = len(english_words) >= 2 and sum(map(len, english_words)) >= 10
-
-    if russian_substantive and len(russian_words) > len(hebrew_words):
-        return "ru"
-    if english_substantive and len(english_words) > len(hebrew_words):
-        return "en"
-    if hebrew_substantive and current_language != "he":
-        return "he"
-    return None
+    """Switch only after an explicit request; addresses never change language."""
+    return _explicit_language(text)
 
 
 def requires_clarification(text: str) -> bool:

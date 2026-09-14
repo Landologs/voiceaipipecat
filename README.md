@@ -1,6 +1,6 @@
 # Local Hebrew receptionist MVP
 
-A local microphone → streaming STT → local language/terminology lookup → LLM → streaming TTS → speaker application using the supplied Pipecat source. Hebrew is the default language; the receptionist can continue in Russian or English when the caller clearly switches. Every AI stage can use OpenAI or Gemini independently. With only `GEMINI_API_KEY` configured, the application selects the full Gemini test stack automatically.
+A local microphone → streaming STT → local language/terminology lookup → LLM → streaming TTS → speaker application using the supplied Pipecat source. Hebrew is the default language. Russian or English is used only after the caller explicitly asks to switch. OpenAI and Gemini remain available for STT and LLM; TTS additionally supports ElevenLabs Text-to-Dialogue.
 
 ## Environment and setup
 
@@ -32,7 +32,13 @@ Copy-Item .env.example .env
 & .venv\Scripts\python.exe -m app.main check
 ```
 
-`STT_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER` accept `openai` or `gemini`. If only `GEMINI_API_KEY` is populated and provider/model fields remain blank, the test configuration is:
+`STT_PROVIDER` and `LLM_PROVIDER` accept `openai` or `gemini`. `TTS_PROVIDER` also accepts `elevenlabs`. The current quality-test stack is configured entirely in `.env`:
+
+- STT: OpenAI `gpt-transcribe`
+- LLM: OpenAI `gpt-4.1-mini`
+- TTS: ElevenLabs `eleven_v3_conversational`, using `ELEVENLABS_VOICE_ID`
+
+Eleven v3 uses ElevenLabs Text-to-Dialogue over WebSocket. It requires both `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID`; `TTS_VOICE` may remain blank for this provider. If only `GEMINI_API_KEY` is populated and provider/model fields remain blank, the test configuration is:
 
 - STT: `gemini-3.5-transcribe-live`
 - LLM and post-call summary: `gemini-3.6-flash`
@@ -50,9 +56,17 @@ The small JSONL dataset under `knowledge/` covers everyday Israeli Hebrew, plumb
 
 Hebrew remains the default. A single foreign word, brand, technical term, or common mixed-language product name does not switch the conversation. An explicit request switches immediately; otherwise a substantive Russian or English sentence is required. Register adaptation becomes casual only after repeated evidence. The agent may sparingly mirror only caller-used terms marked both `agent_can_use` and `safe_to_mirror`; profanity is never eligible. Conversation history remains in the original Pipecat context across language changes.
 
-For the current OpenAI stack, the STT language hint is intentionally omitted so `gpt-live-transcribe` is not pinned to Hebrew. OpenAI documents support for multiple language hints, but Hebrew/Russian/English code-switching accuracy still needs live testing. `gpt-4o-mini-tts` accepts Hebrew, Russian, and English text; OpenAI notes that its built-in voices are optimized for English, so the current `alloy` voice should be evaluated separately in each language. The provider/model/voice remain configurable and no new service was added.
+For the current OpenAI STT stack, the language hint is intentionally omitted so `gpt-transcribe` is not pinned to one language. The app supplies configured Israeli business vocabulary as a transcription hint. Hebrew remains the response language even if an address or a short word is transcribed as English. The provider/model/voice remain configurable.
 
-`.env`, local results, `.venv` and staging files are ignored. No raw audio is saved. Console logs omit transcript content by default; `LOG_TRANSCRIPTS=true` enables caller/agent text for intentional testing. Results contain personal information locally in `data/calls/`; delete them when no longer needed. Framework logging is disabled in the CLI because provider bodies/debug messages can include sensitive content.
+Generate one paid ElevenLabs greeting sample without starting STT, the LLM, Twilio, or a call:
+
+```powershell
+& .venv\Scripts\python.exe -m scripts.smoke_elevenlabs_ttd
+```
+
+The WAV is written under `demo/results/provider-tests/`. This is a narrow credential, model-access, voice-ID and audio check; it does not prove the complete phone pipeline.
+
+`.env`, local results, `.venv` and staging files are ignored. Voice conversations are saved locally by default as stereo WAV files beside their JSON/TXT results; the caller is on the left channel and the agent is on the right. Set `RECORD_CALL_AUDIO=false` to disable this. Console logs omit transcript content by default; `LOG_TRANSCRIPTS=true` enables caller/agent text for intentional testing. Results and recordings contain personal information locally in `data/calls/`; delete them when no longer needed. Framework logging is disabled in the CLI because provider bodies/debug messages can include sensitive content.
 
 ## Offline checks and audio
 
@@ -95,7 +109,7 @@ Normal application configuration uses an unavailable calendar until a real provi
 
 The WhatsApp boundary contains `send_customer_confirmation` and `send_business_summary`. Its mock records messages in memory for tests, while normal runs use an unconfigured implementation that returns `failed`. `WHATSAPP_ACCESS_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID` are placeholders only; no Meta request exists in this milestone.
 
-Pipecat's service and user-to-bot observers now log numeric timing only: service TTFB, LLM first answer token when the provider reports it, TTS first audible audio, turn-detection/transcription time, tool duration and total user-stop-to-first-audio latency. Logs include processor/model names and seconds, without transcript content, caller fields, or credentials.
+Pipecat's service and user-to-bot observers now log numeric timing only: service TTFB, LLM first answer token when the provider reports it, TTS first audible audio, turn-detection/transcription time, tool duration and total user-stop-to-first-audio latency. Logs include processor/model names and seconds, without transcript content, caller fields, or credentials. The cascade pipeline uses a short speech timeout so a turn normally closes about half a second after speech ends. `TTS_SPEED` controls OpenAI speech speed and defaults to `1.15` for a brisk conversational pace.
 
 ### Twilio phone test through ngrok
 
@@ -124,7 +138,7 @@ Start the tunnel in a second terminal:
 & .\scripts\start-ngrok.ps1
 ```
 
-Copy the generated HTTPS origin into the Twilio phone number's incoming Voice webhook as `https://YOUR-NGROK-HOST/twilio/voice`, method `POST`. Call the number. Twilio requests the webhook, receives a bidirectional `<Connect><Stream>` response, and opens `wss://YOUR-NGROK-HOST/twilio/media`. The app validates both Twilio signatures before it accepts audio. The local microphone and speaker are not used during a phone call; the caller's phone supplies input and output. Use `demo-telephony` to isolate the call to `demo/` data and results.
+Copy the generated HTTPS origin into the Twilio phone number's incoming Voice webhook as `https://YOUR-NGROK-HOST/twilio/voice`, method `POST`. Call the number. Twilio requests the webhook, receives a bidirectional `<Connect><Stream>` response, and opens `wss://YOUR-NGROK-HOST/twilio/media`. The app validates both Twilio signatures before it accepts audio. The local microphone and speaker are not used during a phone call; the caller's phone supplies input and output. When Twilio provides a valid, non-hidden `From` number, the app uses it as the contact number without asking the caller to repeat it. Hidden or invalid caller IDs fall back to the spoken-number flow. Use `demo-telephony` to isolate the call to `demo/` data and results.
 
 The official ngrok executable is not bundled. Install it once and either put its authtoken in the ignored `.env` or authenticate the CLI with `ngrok config add-authtoken`. A random free ngrok URL can change after restart, so update the Twilio webhook when it does. Keep both terminals open for the duration of the call.
 
@@ -134,7 +148,7 @@ Expected lifecycle logs contain `Incoming call received`, the Twilio `CallSid`, 
 
 ### Isolated demo
 
-Use the demonstration before adding real business data. These commands force the app to read only `demo/business.json` and `demo/calendar.json`; voice-call results are written only to `demo/results/`.
+Use the demonstration before adding real business data. These commands force the app to read only `demo/business.json` and `demo/calendar.json`; voice-call JSON, TXT and WAV results are written only to `demo/results/`.
 
 ```powershell
 & .venv\Scripts\python.exe -m app.main demo-text
@@ -159,7 +173,7 @@ Then test the complete voice path:
 
 This command sends audio/text to the providers selected in `.env` and may incur charges outside their free quotas. It opens no inbound server. Pipecat's local Silero VAD, default turn strategies and interruption frames handle barge-in; its Smart Turn model handles turn completion. STT text, LLM text and TTS audio stream through the pipeline.
 
-After collecting the relevant details, the receptionist asks whether anything else is needed. When the caller declines or says goodbye, the agent gives its final goodbye and the session closes after four seconds of silence. Speaking during that grace period cancels the automatic close and continues the conversation. Ctrl+C remains available for manual termination. The runner then attempts a separate summary request with the selected LLM, validates it, merges only trusted calendar-action state and atomically saves JSON and text reports. Each report begins with the structured result and ends with the completed caller and agent transcript; raw audio and partial interim transcription are not retained. A second Ctrl+C may terminate that finalization. Summary failures save an explicitly incomplete result rather than invented details. The structured model normalizes only supported Israeli digit formats. Number structure does not establish ownership or caller confirmation.
+After collecting the relevant details, the receptionist asks whether anything else is needed. When the caller declines or says goodbye, the agent gives the Hebrew final goodbye and the session closes one second later. Speaking during that grace period cancels the automatic close and continues the conversation. A short empty turn or idle turn triggers one brief repeat of the last unanswered question. Ctrl+C remains available for manual termination. While the conversation runs, Pipecat buffers the caller and agent audio without adding a provider request; at shutdown it saves one 16 kHz stereo WAV beside the result. The runner then attempts a separate summary request with the selected LLM, validates it, merges only trusted calendar-action state and atomically saves JSON and text reports. Each report begins with the structured result, names its WAV recording when available, and ends with the completed caller and agent transcript. Partial interim transcription is not retained. A second Ctrl+C may terminate that finalization. Summary failures save an explicitly incomplete result rather than invented details. The structured model normalizes only supported Israeli digit formats. Number structure does not establish ownership or caller confirmation.
 
 Manual acceptance scenarios:
 

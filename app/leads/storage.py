@@ -13,6 +13,7 @@ def render_text_report(
     saved_at: datetime,
     summary_status: str,
     transcript: list[dict[str, str]],
+    recording_file: str = "",
 ) -> str:
     """Create a human-readable local companion to the machine-readable JSON result."""
     fields = (
@@ -37,6 +38,8 @@ def render_text_report(
         f"ID звонка: {result.call_id}",
         f"Сохранено: {saved_at.isoformat()}",
     ]
+    if recording_file:
+        lines.append(f"Аудиозапись: {recording_file}")
     lines.extend(f"{label}: {value}" for label, value in fields if value)
     if transcript:
         lines.extend(("", "Полный текст разговора"))
@@ -53,6 +56,7 @@ class LeadRepository(Protocol):
         *,
         summary_status: str = "complete",
         transcript: list[dict[str, str]] | None = None,
+        recording_path: Path | None = None,
     ) -> Path: ...
     def get(self, call_id: str) -> CallResult | None: ...
 
@@ -69,6 +73,7 @@ class JsonLeadRepository:
         *,
         summary_status: str = "complete",
         transcript: list[dict[str, str]] | None = None,
+        recording_path: Path | None = None,
     ) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
         transcript = transcript or []
@@ -79,12 +84,14 @@ class JsonLeadRepository:
         text_target = self.directory / f"{call_id}.txt"
         text_temporary = self.directory / f".{call_id}.txt.tmp"
         saved_at = datetime.now(timezone.utc)
+        recording_file = recording_path.name if recording_path and recording_path.is_file() else ""
         payload = {
             "call_id": call_id,
             "saved_at": saved_at.isoformat(),
             "summary_status": summary_status,
             "result": result.model_dump(mode="json"),
             "transcript": transcript,
+            "recording_file": recording_file,
         }
         try:
             with temporary.open("x", encoding="utf-8") as stream:
@@ -98,6 +105,7 @@ class JsonLeadRepository:
                     saved_at=saved_at,
                     summary_status=summary_status,
                     transcript=transcript,
+                    recording_file=recording_file,
                 ))
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -133,9 +141,11 @@ def save_result(
     *,
     summary_status: str,
     transcript: list[dict[str, str]] | None = None,
+    recording_path: Path | None = None,
 ) -> Path:
     return JsonLeadRepository(directory).save(
         result,
         summary_status=summary_status,
         transcript=transcript,
+        recording_path=recording_path,
     )

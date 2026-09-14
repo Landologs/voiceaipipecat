@@ -18,6 +18,8 @@ GEMINI_TEST_TTS_VOICE = "Kore"
 class Settings:
     api_key: str = field(default="", repr=False)
     gemini_api_key: str = field(default="", repr=False)
+    elevenlabs_api_key: str = field(default="", repr=False)
+    elevenlabs_voice_id: str = ""
     stt_provider: str = "openai"
     llm_provider: str = "openai"
     tts_provider: str = "openai"
@@ -25,10 +27,12 @@ class Settings:
     llm_model: str = ""
     tts_model: str = ""
     tts_voice: str = ""
+    tts_speed: float = 1.15
     input_device: int | None = None
     output_device: int | None = None
     business_path: Path = ROOT / "app/config/business.example.json"
     log_transcripts: bool = False
+    record_call_audio: bool = True
     demo_mode: bool = False
     twilio_account_sid: str = ""
     twilio_auth_token: str = field(default="", repr=False)
@@ -45,6 +49,7 @@ class Settings:
         load_dotenv(ROOT / ".env", override=False, encoding="utf-8-sig")
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+        elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
         default_provider = "gemini" if gemini_key and not openai_key else "openai"
 
         def provider(name):
@@ -64,6 +69,13 @@ class Settings:
             except ValueError:
                 raise ValueError(f"{name} must be an integer") from None
 
+        def number(name, default):
+            value = os.getenv(name, "").strip()
+            try:
+                return float(value) if value else default
+            except ValueError:
+                raise ValueError(f"{name} must be a number") from None
+
         def boolean(name, default=False):
             value = os.getenv(name, "").strip().lower()
             if not value:
@@ -77,6 +89,8 @@ class Settings:
         return cls(
             api_key=openai_key,
             gemini_api_key=gemini_key,
+            elevenlabs_api_key=elevenlabs_key,
+            elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID", "").strip(),
             stt_provider=stt_provider,
             llm_provider=llm_provider,
             tts_provider=tts_provider,
@@ -88,10 +102,12 @@ class Settings:
             or (GEMINI_TEST_TTS_MODEL if tts_provider == "gemini" else ""),
             tts_voice=os.getenv("TTS_VOICE", "").strip()
             or (GEMINI_TEST_TTS_VOICE if tts_provider == "gemini" else ""),
+            tts_speed=number("TTS_SPEED", 1.15),
             input_device=device("AUDIO_INPUT_DEVICE_INDEX"),
             output_device=device("AUDIO_OUTPUT_DEVICE_INDEX"),
             business_path=ROOT / (os.getenv("BUSINESS_CONFIG_PATH") or "app/config/business.example.json"),
             log_transcripts=boolean("LOG_TRANSCRIPTS"),
+            record_call_audio=boolean("RECORD_CALL_AUDIO", True),
             twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
             twilio_public_url=(
@@ -113,18 +129,33 @@ class Settings:
         return replace(self, business_path=DEMO_ROOT / "business.json", demo_mode=True)
 
     def validate_voice(self):
-        for name in ("stt_provider", "llm_provider", "tts_provider"):
-            if getattr(self, name) not in {"openai", "gemini"}:
-                raise ValueError(f"{name.upper()} must be openai or gemini")
-        missing = [name.upper() for name in ("stt_model", "llm_model", "tts_model", "tts_voice")
+        allowed = {
+            "stt_provider": {"openai", "gemini"},
+            "llm_provider": {"openai", "gemini"},
+            "tts_provider": {"openai", "gemini", "elevenlabs"},
+        }
+        for name, providers in allowed.items():
+            if getattr(self, name) not in providers:
+                choices = ", ".join(sorted(providers))
+                raise ValueError(f"{name.upper()} must be one of: {choices}")
+        missing = [name.upper() for name in ("stt_model", "llm_model", "tts_model")
                    if not getattr(self, name)]
+        if self.tts_provider != "elevenlabs" and not self.tts_voice:
+            missing.append("TTS_VOICE")
         providers = {self.stt_provider, self.llm_provider, self.tts_provider}
         if "openai" in providers and not self.api_key:
             missing.append("OPENAI_API_KEY")
         if "gemini" in providers and not self.gemini_api_key:
             missing.append("GEMINI_API_KEY")
+        if self.tts_provider == "elevenlabs":
+            if not self.elevenlabs_api_key:
+                missing.append("ELEVENLABS_API_KEY")
+            if not self.elevenlabs_voice_id:
+                missing.append("ELEVENLABS_VOICE_ID")
         if missing:
             raise ValueError("Required before live voice: " + ", ".join(missing))
+        if not 0.25 <= self.tts_speed <= 4.0:
+            raise ValueError("TTS_SPEED must be between 0.25 and 4.0")
 
     def validate_text(self):
         if self.llm_provider not in {"openai", "gemini"}:

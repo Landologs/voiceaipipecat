@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.phone.israel_phone import normalize_israeli_phone
 
 
@@ -13,7 +13,9 @@ class CallResult(BaseModel):
     phone_normalized: str = ""
     phone_confirmed: bool = False
     intent: str = ""
-    language: Literal["", "he", "ru", "en"] = ""
+    language: str = Field(default="", pattern=r"^$|^[A-Za-z]{2,3}(?:-[A-Za-z]{2})?$")
+    service_request: str = ""
+    # Kept for backward compatibility with results written by the original MVP.
     plumbing_problem: str = ""
     request_summary: str = ""
     address: str = ""
@@ -38,6 +40,10 @@ class CallResult(BaseModel):
 
     @model_validator(mode="after")
     def normalize_phone(self):
+        if self.service_request and not self.plumbing_problem:
+            self.plumbing_problem = self.service_request
+        elif self.plumbing_problem and not self.service_request:
+            self.service_request = self.plumbing_problem
         self.phone_normalized = normalize_israeli_phone(self.phone_raw)
         if not self.phone_normalized:
             self.phone_confirmed = False
